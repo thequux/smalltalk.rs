@@ -1,8 +1,8 @@
 use crate::objectmemory::{ObjectMemory, OOP, Word, UWord, NIL_PTR, DOES_NOT_UNDERSTAND_SEL, CLASS_ARRAY_PTR, ObjectLayout, CLASS_MESSAGE_PTR, TRUE_PTR, FALSE_PTR, MUST_BE_BOOLEAN_SEL, CANNOT_RETURN_SEL, CLASS_LARGE_POSITIVEINTEGER_PTR, SPECIAL_SELECTORS_PTR, CLASS_METHOD_CONTEXT_PTR, CLASS_BLOCK_CONTEXT_PTR, CLASS_POINT_PTR, CLASS_FLOAT_PTR, CHARACTER_TABLE_PTR, CLASS_CHARACTER_PTR, CLASS_STRING_PTR, SCHEDULER_ASSOCIATION_PTR};
 use crate::interpreter::HeaderFlag::PrimSelf;
-use term::terminfo::parm::Param::Words;
 
 mod display;
+mod bitblt;
 
 pub struct Interpreter {
     memory: ObjectMemory,
@@ -426,7 +426,6 @@ pub enum Insn {
     Jump(isize),
     JumpFalse(isize), // pop and jump
     JumpTrue(isize),
-    SendArith(usize), // send arithmetic message
     SendSpecial(usize),
 
     Illegal1([u8;1]),
@@ -452,10 +451,6 @@ impl Interpreter {
         self.check_process_switch();
         let insn = self.decode_insn();
         self.dispatch(insn);
-    }
-
-    pub fn check_process_switch(&mut self) {
-        unimplemented!()
     }
 
     pub fn decode_insn(&mut self) -> Insn {
@@ -618,8 +613,6 @@ impl Interpreter {
                     let count = self.memory.get_ptr(SPECIAL_SELECTORS_PTR, sel * 2 + 1).as_integer() as UWord as usize;
                     self.send_selector(selector, count);
                 }
-            },
-            Insn::SendArith(sel) => match sel {
             },
             Insn::Illegal1(enc) => panic!("Illegal opcode {:?}", enc),
             Insn::Illegal2(enc) => panic!("Illegal opcode {:?}", enc),
@@ -878,6 +871,7 @@ impl Interpreter {
             90...109 => self.dispatch_prim_io(),
             110...127 => self.dispatch_prim_system(),
             128...255 => self.dispatch_prim_private(),
+            _ => None,
         }
     }
 
@@ -1791,7 +1785,7 @@ impl Interpreter {
 
     fn check_process_switch(&mut self) {
         while let Some(semaphore) = self.semaphore_list.pop() {
-            self.synchronous_signal(semaphore)
+            self.synchronous_signal(semaphore);
         }
 
         if let Some(process) = self.new_process.take() {
@@ -1878,7 +1872,8 @@ impl Interpreter {
     }
 
     fn suspend_active(&mut self) {
-        self.transfer_to(self.wake_highest_priority());
+        let process = self.wake_highest_priority();
+        self.transfer_to(process);
     }
 
     fn resume(&mut self, process: OOP) -> Option<()> {
@@ -1952,7 +1947,7 @@ impl Interpreter {
             93 => self.prim_input_semaphore(),
             94 => self.prim_sample_interval(),
             95 => self.prim_input_word(),
-            96 => self.prim_copy_bits(),
+            96 => self.prim_copy_bits(), // in bitblt
             97 => self.prim_snapshot(),
             98 => self.prim_time_words_into(),
             99 => self.prim_tick_words_into(),
@@ -2022,11 +2017,6 @@ impl Interpreter {
         Some(())
     }
 
-    fn prim_copy_bits(&mut self) -> Option<()> {
-
-        Some(())
-    }
-
     fn prim_snapshot(&mut self) -> Option<()> {
         println!("Snapshot!");
         Some(())
@@ -2046,7 +2036,7 @@ impl Interpreter {
     }
 
     fn prim_tick_words_into(&mut self) -> Option<()> {
-        let unix_time = Self::time_millis();
+        let unix_time = self.time_millis();
 
         let result_array = self.stack_value(0);
         for i in 0..4 {
@@ -2102,7 +2092,6 @@ impl Interpreter {
 impl Interpreter {
     fn dispatch_prim_system(&mut self) -> Option<()> {
         match self.primitive_index {
-            _ => None
             110 => self.prim_equiv(),
             111 => self.prim_class(),
             112 => self.prim_core_left(),
@@ -2110,6 +2099,7 @@ impl Interpreter {
             114 => self.prim_debug(),
             115 => self.prim_oops_left(),
             116 => self.prim_signal_at_oops_left_words_left(),
+            _ => None,
         }
     }
 
@@ -2133,7 +2123,8 @@ impl Interpreter {
     fn prim_core_left(&mut self) -> Option<()> {
         self.pop();
         // more than I can say, for sure...
-        self.push(self.long_integer_for(0xFFFFFFFF));
+        let result = self.long_integer_for(0xFFFFFFFF);
+        self.push(result);
         Some(())
     }
 
@@ -2149,7 +2140,7 @@ impl Interpreter {
 
     fn prim_oops_left(&mut self) -> Option<()> {
         self.pop();
-        self.push(OOP::from(self.memory.oops_left()));
+        self.push(OOP::from(self.memory.oops_left() as Word));
         Some(())
     }
 
@@ -2192,7 +2183,7 @@ impl Interpreter {
         }
 
         // Any display processing?
-        self.poll_display();
+        self::display::poll_display(self);
     }
 }
 

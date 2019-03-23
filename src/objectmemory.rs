@@ -311,5 +311,9 @@ impl ObjectMemory {
             self.put_ptr(from_obj, from_field + i, NIL_PTR);
         }
     }
+
+    pub fn oops_left(&self) -> usize {
+        32767 - self.objects.iter().filter(|x| x.is_some()).count()
+    }
 }
 
