@@ -1,8 +1,16 @@
-use crate::objectmemory::{ObjectMemory, OOP, Word, UWord, NIL_PTR, DOES_NOT_UNDERSTAND_SEL, CLASS_ARRAY_PTR, ObjectLayout, CLASS_MESSAGE_PTR, TRUE_PTR, FALSE_PTR, MUST_BE_BOOLEAN_SEL, CANNOT_RETURN_SEL, CLASS_LARGE_POSITIVEINTEGER_PTR, SPECIAL_SELECTORS_PTR, CLASS_METHOD_CONTEXT_PTR, CLASS_BLOCK_CONTEXT_PTR, CLASS_POINT_PTR, CLASS_FLOAT_PTR, CHARACTER_TABLE_PTR, CLASS_CHARACTER_PTR, CLASS_STRING_PTR, SCHEDULER_ASSOCIATION_PTR};
 use crate::interpreter::HeaderFlag::PrimSelf;
+use crate::objectmemory::{
+    ObjectLayout, ObjectMemory, UWord, Word, CANNOT_RETURN_SEL, CHARACTER_TABLE_PTR,
+    CLASS_ARRAY_PTR, CLASS_BLOCK_CONTEXT_PTR, CLASS_CHARACTER_PTR, CLASS_FLOAT_PTR,
+    CLASS_LARGE_POSITIVEINTEGER_PTR, CLASS_MESSAGE_PTR, CLASS_METHOD_CONTEXT_PTR, CLASS_POINT_PTR,
+    CLASS_STRING_PTR, DOES_NOT_UNDERSTAND_SEL, FALSE_PTR, MUST_BE_BOOLEAN_SEL, NIL_PTR, OOP,
+    SCHEDULER_ASSOCIATION_PTR, SPECIAL_SELECTORS_PTR, TRUE_PTR,
+};
+use std::collections::VecDeque;
 
-mod display;
 mod bitblt;
+mod display;
+mod startup;
 
 pub struct Interpreter {
     memory: ObjectMemory,
@@ -85,7 +93,7 @@ impl MethodHeader {
     pub fn flag_value(self) -> HeaderFlag {
         use self::HeaderFlag::*;
         match (self.0 >> 12) & 0x5 {
-            count@(0...4) => HeaderFlag::Normal(count),
+            count @ (0...4) => HeaderFlag::Normal(count),
             5 => PrimSelf,
             6 => PrimReturn,
             7 => HeaderExt,
@@ -139,8 +147,7 @@ impl Interpreter {
         let header = self.method_header_of(method);
         match header.flag_value() {
             HeaderFlag::Normal(arg_count) => arg_count,
-            HeaderFlag::HeaderExt => self.header_extension_fast(method, header)
-                .argument_count(),
+            HeaderFlag::HeaderExt => self.header_extension_fast(method, header).argument_count(),
             HeaderFlag::PrimReturn | HeaderFlag::PrimSelf => 0,
         }
     }
@@ -162,11 +169,9 @@ impl Interpreter {
     }
 
     fn method_class_fast(&self, method: OOP, header: MethodHeader) -> OOP {
-        let klass_assoc = self.method_literal_of(method, header.literal_count()-1);
+        let klass_assoc = self.method_literal_of(method, header.literal_count() - 1);
         self.memory.get_ptr(klass_assoc, VALUE_INDEX)
     }
-
-
 }
 
 // Context stuff
@@ -190,7 +195,8 @@ impl Interpreter {
     }
 
     pub fn context_put_ip(&mut self, context: OOP, new_val: Word) {
-        self.memory.put_ptr(context, CTX_IP_INDEX, OOP::from(new_val))
+        self.memory
+            .put_ptr(context, CTX_IP_INDEX, OOP::from(new_val))
     }
 
     pub fn context_get_sp(&self, context: OOP) -> Word {
@@ -198,7 +204,8 @@ impl Interpreter {
     }
 
     pub fn context_put_sp(&mut self, context: OOP, new_val: Word) {
-        self.memory.put_ptr(context, CTX_SP_INDEX, OOP::from(new_val))
+        self.memory
+            .put_ptr(context, CTX_SP_INDEX, OOP::from(new_val))
     }
 
     pub fn block_argument_count(&mut self, context: OOP) -> usize {
@@ -220,14 +227,16 @@ impl Interpreter {
         self.method = self.memory.get_ptr(self.home_context, CTX_METHOD_INDEX);
         self.ip = self.context_get_ip(self.active_context) as UWord as usize - 1;
         self.sp = self.context_get_sp(self.active_context) as UWord as usize
-            + CTX_TEMPFRAME_START_INDEX - 1;
+            + CTX_TEMPFRAME_START_INDEX
+            - 1;
     }
 
     pub fn save_ctx(&mut self) {
-        self.context_put_ip(self.active_context,
-                            (self.ip + 1) as Word);
-        self.context_put_sp(self.active_context,
-                            (self.sp - CTX_TEMPFRAME_START_INDEX + 1) as Word);
+        self.context_put_ip(self.active_context, (self.ip + 1) as Word);
+        self.context_put_sp(
+            self.active_context,
+            (self.sp - CTX_TEMPFRAME_START_INDEX + 1) as Word,
+        );
     }
 
     pub fn push(&mut self, oop: OOP) {
@@ -274,7 +283,8 @@ impl Interpreter {
     }
 
     pub fn ctx_temp(&self, offset: usize) -> OOP {
-        self.memory.get_ptr(self.home_context, offset + CTX_TEMPFRAME_START_INDEX)
+        self.memory
+            .get_ptr(self.home_context, offset + CTX_TEMPFRAME_START_INDEX)
     }
 
     pub fn ctx_literal(&self, offset: usize) -> OOP {
@@ -348,14 +358,14 @@ impl Interpreter {
             ObjectLayout::Pointer,
         );
 
-        let message = self.memory.instantiate_class(
-            CLASS_MESSAGE_PTR,
-            MESSAGE_SIZE,
-            ObjectLayout::Pointer,
-        );
+        let message =
+            self.memory
+                .instantiate_class(CLASS_MESSAGE_PTR, MESSAGE_SIZE, ObjectLayout::Pointer);
 
-        self.memory.put_ptr(message, MESSAGE_SELECTOR_INDEX, self.message_selector);
-        self.memory.put_ptr(message, MESSAGE_ARGUMENTS_INDEX, argument_array);
+        self.memory
+            .put_ptr(message, MESSAGE_SELECTOR_INDEX, self.message_selector);
+        self.memory
+            .put_ptr(message, MESSAGE_ARGUMENTS_INDEX, argument_array);
 
         self.memory.transfer_fields(
             self.argument_count,
@@ -397,7 +407,9 @@ impl From<OOP> for InstanceSpecification {
 
 impl Interpreter {
     pub(crate) fn instance_specification(&self, klass: OOP) -> InstanceSpecification {
-        self.memory.get_ptr(klass, INSTANCE_SPECIFICATION_INDEX).into()
+        self.memory
+            .get_ptr(klass, INSTANCE_SPECIFICATION_INDEX)
+            .into()
     }
 }
 
@@ -428,9 +440,9 @@ pub enum Insn {
     JumpTrue(isize),
     SendSpecial(usize),
 
-    Illegal1([u8;1]),
-    Illegal2([u8;2]),
-    Illegal3([u8;3]),
+    Illegal1([u8; 1]),
+    Illegal2([u8; 2]),
+    Illegal3([u8; 3]),
 }
 
 /// The actual interpreter
@@ -456,9 +468,9 @@ impl Interpreter {
 
     pub fn decode_insn(bytecode: &[u8], ip: usize) -> (Insn, usize) {
         let mut fetch_ip = ip;
-        let mut next_byte = ||{
+        let mut next_byte = || {
             fetch_ip += 1;
-            bytecode[fetch_ip-1]
+            bytecode[fetch_ip - 1]
         };
         let insn = next_byte();
         let decoded = match insn {
@@ -491,9 +503,9 @@ impl Interpreter {
                     0x40 => Insn::PushTemporary(sub),
                     0x80 => Insn::PushLiteralConst(sub),
                     0xC0 => Insn::PushLiteralVar(sub),
-                    _ => unreachable!()
+                    _ => unreachable!(),
                 }
-            },
+            }
             0x81 => {
                 let next = next_byte();
                 let sub = next as usize & 0x3F;
@@ -502,9 +514,9 @@ impl Interpreter {
                     0x40 => Insn::StoreTemporary(sub),
                     0x80 => Insn::Illegal2([insn, next]),
                     0xC0 => Insn::StoreLiteralVar(sub),
-                    _ => unreachable!()
+                    _ => unreachable!(),
                 }
-            },
+            }
             0x82 => {
                 let next = next_byte();
                 let sub = next as usize & 0x3F;
@@ -513,27 +525,27 @@ impl Interpreter {
                     0x40 => Insn::PopTemporary(sub),
                     0x80 => Insn::Illegal2([insn, next]),
                     0xC0 => Insn::PopLiteralVar(sub),
-                    _ => unreachable!()
+                    _ => unreachable!(),
                 }
             }
             0x83 => {
                 let next = next_byte() as usize;
                 Insn::SendLiteral(next & 0x3F, next >> 6)
-            },
+            }
             0x84 => {
                 let args = next_byte() as usize;
                 let sel = next_byte() as usize;
                 Insn::SendLiteral(sel, args)
-            },
+            }
             0x85 => {
                 let next = next_byte() as usize;
                 Insn::SendLiteralSuper(next & 0x3F, next >> 6)
-            },
+            }
             0x86 => {
                 let args = next_byte() as usize;
                 let sel = next_byte() as usize;
                 Insn::SendLiteralSuper(sel, args)
-            },
+            }
             0x87 => Insn::Pop,
             0x88 => Insn::Dup,
             0x89 => Insn::PushCtx,
@@ -543,15 +555,15 @@ impl Interpreter {
             0xA0...0xA7 => {
                 let next = next_byte() as isize;
                 Insn::Jump(((insn as isize & 0x7) - 4) << 8 + next)
-            },
+            }
             0xA8...0xAB => {
                 let next = next_byte() as isize;
                 Insn::JumpTrue((insn as isize & 0x3) << 8 + next)
-            },
+            }
             0xAC...0xAF => {
                 let next = next_byte() as isize;
                 Insn::JumpFalse((insn as isize & 0x3) << 8 + next)
-            },
+            }
             0xB0...0xCF => Insn::SendSpecial(insn as usize - 0xB0),
             0xD0...0xDF => Insn::SendLiteral(insn as usize & 0xF, 0),
             0xE0...0xEF => Insn::SendLiteral(insn as usize & 0xF, 1),
@@ -565,48 +577,60 @@ impl Interpreter {
             Insn::PushReceiverVar(i) => {
                 // push receiver variable
                 self.push(self.memory.get_ptr(self.receiver, i));
-            },
+            }
             Insn::PushTemporary(i) => {
                 // push temporary
                 self.push(self.ctx_temp(i));
-            },
+            }
             Insn::PushConst(oop) => self.push(oop),
             Insn::PushLiteralConst(i) => self.push(self.ctx_literal(i)),
-            Insn::PushLiteralVar(i) => self.push(self.memory.get_ptr(self.ctx_literal(i), VALUE_INDEX)),
+            Insn::PushLiteralVar(i) => {
+                self.push(self.memory.get_ptr(self.ctx_literal(i), VALUE_INDEX))
+            }
             Insn::PopLiteralVar(i) => {
                 let value = self.pop();
                 let literal = self.ctx_literal(i);
                 self.memory.put_ptr(literal, VALUE_INDEX, value)
-            },
-            Insn::StoreLiteralVar(i) => self.memory.put_ptr(self.ctx_literal(i), VALUE_INDEX, self.stack_top()),
+            }
+            Insn::StoreLiteralVar(i) => {
+                self.memory
+                    .put_ptr(self.ctx_literal(i), VALUE_INDEX, self.stack_top())
+            }
             Insn::PopReceiverVar(i) => {
                 let value = self.pop();
                 self.memory.put_ptr(self.receiver, i, value)
-            },
+            }
             Insn::StoreReceiverVar(i) => self.memory.put_ptr(self.receiver, i, self.stack_top()),
             Insn::PopTemporary(i) => {
                 let value = self.pop();
-                self.memory.put_ptr(self.home_context, i + CTX_TEMPFRAME_START_INDEX, value)
-            },
-            Insn::StoreTemporary(i) => self.memory.put_ptr(self.home_context, i + CTX_TEMPFRAME_START_INDEX, self.stack_top()),
+                self.memory
+                    .put_ptr(self.home_context, i + CTX_TEMPFRAME_START_INDEX, value)
+            }
+            Insn::StoreTemporary(i) => self.memory.put_ptr(
+                self.home_context,
+                i + CTX_TEMPFRAME_START_INDEX,
+                self.stack_top(),
+            ),
             Insn::PushReceiver => self.push(self.receiver),
             Insn::PushCtx => self.push(self.active_context),
             Insn::Dup => self.push(self.stack_top()),
-            Insn::Pop => { self.pop(); },
+            Insn::Pop => {
+                self.pop();
+            }
             Insn::Jump(i) => {
                 self.ip = (self.ip as isize + i) as usize;
                 self.interruption_point();
-            },
+            }
             Insn::JumpFalse(i) => self.conditional_jump(FALSE_PTR, i),
             Insn::JumpTrue(i) => self.conditional_jump(TRUE_PTR, i),
             Insn::BlockReturn => {
                 let value = self.pop();
                 self.return_value(self.ctx_caller(), value)
-            },
+            }
             Insn::MessageReturn => {
                 let value = self.pop();
                 self.return_value(self.ctx_sender(), value)
-            },
+            }
             Insn::MessageReturnOOP(oop) => self.return_value(self.ctx_sender(), oop),
             Insn::MessageReturnRcvr => self.return_value(self.ctx_sender(), self.receiver),
             Insn::SendLiteral(sel, args) => self.send_selector(self.ctx_literal(sel), args),
@@ -617,10 +641,13 @@ impl Interpreter {
             Insn::SendSpecial(sel) => {
                 if self.special_selector_primitive_response(sel).is_none() {
                     let selector = self.memory.get_ptr(SPECIAL_SELECTORS_PTR, sel * 2);
-                    let count = self.memory.get_ptr(SPECIAL_SELECTORS_PTR, sel * 2 + 1).as_integer() as UWord as usize;
+                    let count = self
+                        .memory
+                        .get_ptr(SPECIAL_SELECTORS_PTR, sel * 2 + 1)
+                        .as_integer() as UWord as usize;
                     self.send_selector(selector, count);
                 }
-            },
+            }
             Insn::Illegal1(enc) => panic!("Illegal opcode {:?}", enc),
             Insn::Illegal2(enc) => panic!("Illegal opcode {:?}", enc),
             Insn::Illegal3(enc) => panic!("Illegal opcode {:?}", enc),
@@ -659,8 +686,10 @@ impl Interpreter {
     }
 
     fn nil_context_fields(&mut self) {
-        self.memory.put_ptr(self.active_context, CTX_SENDER_INDEX, NIL_PTR);
-        self.memory.put_ptr(self.active_context, CTX_IP_INDEX, NIL_PTR);
+        self.memory
+            .put_ptr(self.active_context, CTX_SENDER_INDEX, NIL_PTR);
+        self.memory
+            .put_ptr(self.active_context, CTX_IP_INDEX, NIL_PTR);
     }
 
     fn send_selector(&mut self, selector: OOP, arg_count: usize) {
@@ -757,7 +786,8 @@ impl Interpreter {
     }
 
     fn put_integer(&mut self, oop: OOP, field: usize, value: Word) -> Option<()> {
-        self.memory.put_ptr(oop, field, OOP::try_from_integer(value)?);
+        self.memory
+            .put_ptr(oop, field, OOP::try_from_integer(value)?);
         Some(())
     }
 
@@ -787,7 +817,11 @@ impl Interpreter {
                 i += 1;
             }
 
-            let obj = self.memory.instantiate_class(CLASS_LARGE_POSITIVEINTEGER_PTR, i, ObjectLayout::Byte);
+            let obj = self.memory.instantiate_class(
+                CLASS_LARGE_POSITIVEINTEGER_PTR,
+                i,
+                ObjectLayout::Byte,
+            );
             itmp = int;
             i = 0;
             while itmp != 0 {
@@ -846,7 +880,9 @@ impl Interpreter {
 
     fn prim_common(&mut self, sel: usize) -> Option<()> {
         let argument_count = self.get_integer(SPECIAL_SELECTORS_PTR, sel * 2 + 1)?;
-        let rcvr_klass = self.memory.get_class_of(self.stack_value(argument_count as usize));
+        let rcvr_klass = self
+            .memory
+            .get_class_of(self.stack_value(argument_count as usize));
         match self.primitive_index {
             22 => self.prim_equiv(),
             23 => self.prim_class(),
@@ -856,15 +892,15 @@ impl Interpreter {
                 } else {
                     None
                 }
-            },
+            }
             25 | 26 => {
                 if rcvr_klass == CLASS_BLOCK_CONTEXT_PTR {
                     self.prim_value()
                 } else {
                     None
                 }
-            },
-            _ => None
+            }
+            _ => None,
         }
     }
 
@@ -904,7 +940,6 @@ impl Interpreter {
             18 => self.prim_mk_point(),
             _ => None,
         }
-
     }
 
     fn prim_add(&mut self) -> Option<()> {
@@ -938,9 +973,9 @@ impl Interpreter {
         let arg = self.stack_value(0).try_as_integer()?;
         let rcvr = self.stack_value(1).try_as_integer()?;
         if arg == 0 {
-            return None
+            return None;
         } else if rcvr % arg != 0 {
-            return None
+            return None;
         }
         let result = OOP::try_from_integer(rcvr / arg)?;
         self.popn(2);
@@ -953,7 +988,7 @@ impl Interpreter {
         let mut arg = self.stack_value(0).try_as_integer()?;
         let mut rcvr = self.stack_value(1).try_as_integer()?;
         if arg == 0 {
-            return None
+            return None;
         }
         if arg < 0 {
             arg = -arg;
@@ -974,7 +1009,7 @@ impl Interpreter {
         let mut arg = self.stack_value(0).try_as_integer()?;
         let mut rcvr = self.stack_value(1).try_as_integer()?;
         if arg == 0 {
-            return None
+            return None;
         }
         if arg < 0 {
             arg = -arg;
@@ -995,7 +1030,7 @@ impl Interpreter {
         let arg = self.stack_value(0).try_as_integer()?;
         let rcvr = self.stack_value(1).try_as_integer()?;
         if arg == 0 {
-            return None
+            return None;
         }
         let result = OOP::try_from_integer(rcvr / arg)?;
         self.popn(2);
@@ -1064,7 +1099,7 @@ impl Interpreter {
             if res.as_integer() >> arg == rcvr {
                 res
             } else {
-                return None
+                return None;
             }
         };
         self.popn(2);
@@ -1084,7 +1119,9 @@ impl Interpreter {
         arg.try_as_integer()?;
         rcvr.try_as_integer()?;
 
-        let result = self.memory.instantiate_class(CLASS_POINT_PTR, CLASS_POINT_SIZE, ObjectLayout::Pointer);
+        let result =
+            self.memory
+                .instantiate_class(CLASS_POINT_PTR, CLASS_POINT_SIZE, ObjectLayout::Pointer);
         self.memory.put_ptr(result, CLASS_POINT_X, rcvr);
         self.memory.put_ptr(result, CLASS_POINT_Y, arg);
         self.popn(2);
@@ -1125,7 +1162,7 @@ macro_rules! defprim_flt_arith {
 // Floating point
 impl Interpreter {
     fn get_float(&self, oop: OOP) -> Option<f32> {
-        return self.memory.get_float(oop)
+        return self.memory.get_float(oop);
     }
     fn dispatch_prim_float(&mut self) -> Option<()> {
         match self.primitive_index {
@@ -1171,7 +1208,7 @@ impl Interpreter {
         use crate::objectmemory::{SMALLINT_MAX, SMALLINT_MIN};
         let rcvr = self.get_float(self.stack_top())?.trunc();
         if rcvr < SMALLINT_MIN as f32 || rcvr > SMALLINT_MAX as f32 {
-            return None
+            return None;
         }
         let int = OOP::try_from_integer(rcvr as Word)?;
         self.popn(1);
@@ -1229,21 +1266,22 @@ impl Interpreter {
             65 => self.prim_next(),
             66 => self.prim_nextput(),
             67 => self.prim_atend(),
-            _ => None
+            _ => None,
         }
     }
 
     fn check_indexable_bounds(&self, index: usize, array: OOP) -> Option<()> {
         let klass = self.memory.get_class_of(array);
         if index < 1 {
-            return None
+            return None;
         }
         // Q: Is this correct? It seems fixed fields might all be pointers (e.g., CompiledMethod)
         // A: CompiledMethod is a bytes object; the other fields have image-level support
-        if index + self.instance_specification(klass).fixed_fields() <= self.length_of(klass, array) {
-            return Some(())
+        if index + self.instance_specification(klass).fixed_fields() <= self.length_of(klass, array)
+        {
+            return Some(());
         } else {
-            return None
+            return None;
         }
     }
 
@@ -1260,12 +1298,12 @@ impl Interpreter {
         let ispec = self.instance_specification(klass);
         if ispec.is_words() {
             if ispec.is_pointers() {
-                self.memory.get_ptr(array, index-1)
+                self.memory.get_ptr(array, index - 1)
             } else {
-                self.long_integer_for(self.memory.get_word(array, index-1) as UWord as usize)
+                self.long_integer_for(self.memory.get_word(array, index - 1) as UWord as usize)
             }
         } else {
-            OOP::from(self.memory.get_byte(array, index-1) as Word)
+            OOP::from(self.memory.get_byte(array, index - 1) as Word)
         }
     }
 
@@ -1274,12 +1312,14 @@ impl Interpreter {
         let ispec = self.instance_specification(klass);
         if ispec.is_words() {
             if ispec.is_pointers() {
-                self.memory.put_ptr(array, index-1, value)
+                self.memory.put_ptr(array, index - 1, value)
             } else {
-                self.memory.put_word(array, index-1, self.long_integer_value_of(value)? as Word);
+                self.memory
+                    .put_word(array, index - 1, self.long_integer_value_of(value)? as Word);
             }
         } else {
-            self.memory.put_byte(array, index-1, value.try_as_integer()? as u8);
+            self.memory
+                .put_byte(array, index - 1, value.try_as_integer()? as u8);
         }
         Some(())
     }
@@ -1311,8 +1351,8 @@ impl Interpreter {
         let array = self.stack_top();
         let klass = self.memory.get_class_of(array);
         let length = self.long_integer_for(
-            self.length_of(klass, array)
-                - self.instance_specification(klass).fixed_fields());
+            self.length_of(klass, array) - self.instance_specification(klass).fixed_fields(),
+        );
         self.popn(1);
         self.push(length);
         Some(())
@@ -1365,7 +1405,9 @@ impl Interpreter {
         if array_klass == CLASS_ARRAY_PTR {
             self.push(result);
         } else {
-            let char = self.memory.get_ptr(CHARACTER_TABLE_PTR, result.as_integer() as usize);
+            let char = self
+                .memory
+                .get_ptr(CHARACTER_TABLE_PTR, result.as_integer() as usize);
             self.push(char);
         }
         Some(())
@@ -1436,7 +1478,7 @@ impl Interpreter {
             77 => self.prim_some_instance(),
             78 => self.prim_next_instance(),
             79 => self.prim_new_method(),
-            _ => None
+            _ => None,
         }
     }
 
@@ -1444,7 +1486,7 @@ impl Interpreter {
         let index = self.stack_top().try_as_integer()?;
         let receiver = self.stack_value(1);
         if index <= 0 || index as usize > self.method_header_of(receiver).oop_count() {
-            return None
+            return None;
         }
         self.popn(2);
         self.push(self.memory.get_ptr(receiver, index as usize - 1));
@@ -1456,7 +1498,7 @@ impl Interpreter {
         let index = self.stack_value(1).try_as_integer()?;
         let receiver = self.stack_value(2);
         if index <= 0 || index as usize > self.method_header_of(receiver).oop_count() {
-            return None
+            return None;
         }
         self.memory.put_ptr(receiver, index as usize - 1, value);
         self.popn(2);
@@ -1469,12 +1511,14 @@ impl Interpreter {
         let ispec = self.instance_specification(class);
         let size = ispec.fixed_fields();
         if ispec.is_indexable() {
-            return None
+            return None;
         }
         let obj = if ispec.is_pointers() {
-            self.memory.instantiate_class(class, size, ObjectLayout::Pointer)
+            self.memory
+                .instantiate_class(class, size, ObjectLayout::Pointer)
         } else if ispec.is_words() {
-            self.memory.instantiate_class(class, size, ObjectLayout::Word)
+            self.memory
+                .instantiate_class(class, size, ObjectLayout::Word)
         } else {
             return None;
         };
@@ -1490,7 +1534,7 @@ impl Interpreter {
 
         let ispec = self.instance_specification(class);
         if !ispec.is_indexable() {
-            return None
+            return None;
         }
 
         let size = size + ispec.fixed_fields();
@@ -1594,8 +1638,11 @@ impl Interpreter {
             return None;
         }
 
-        let size = (MethodHeader::new(header).literal_count() + 1) * OOP::byte_size() + bytecode_count as usize;
-        let method = self.memory.instantiate_class(class, size, ObjectLayout::Byte);
+        let size = (MethodHeader::new(header).literal_count() + 1) * OOP::byte_size()
+            + bytecode_count as usize;
+        let method = self
+            .memory
+            .instantiate_class(class, size, ObjectLayout::Byte);
         self.popn(3);
         self.push(method);
         Some(())
@@ -1616,7 +1663,7 @@ impl Interpreter {
             87 => self.prim_resume(),
             88 => self.prim_suspend(),
             89 => self.prim_flush_cache(),
-            _ => None
+            _ => None,
         }
     }
 
@@ -1630,13 +1677,16 @@ impl Interpreter {
         };
 
         let ctx_size = self.memory.get_word_length_of(method_ctx);
-        let new_ctx = self.memory.instantiate_class(CLASS_BLOCK_CONTEXT_PTR, ctx_size, ObjectLayout::Pointer);
+        let new_ctx =
+            self.memory
+                .instantiate_class(CLASS_BLOCK_CONTEXT_PTR, ctx_size, ObjectLayout::Pointer);
         let iip = OOP::from(self.ip as i16 + 3);
 
         self.memory.put_ptr(new_ctx, CTX_INITIAL_IP_INDEX, iip);
         self.memory.put_ptr(new_ctx, CTX_IP_INDEX, iip);
         self.context_put_sp(new_ctx, 0);
-        self.memory.put_ptr(new_ctx, CTX_BLOCK_ARG_COUNT_INDEX, block_argcount);
+        self.memory
+            .put_ptr(new_ctx, CTX_BLOCK_ARG_COUNT_INDEX, block_argcount);
         self.memory.put_ptr(new_ctx, CTX_HOME_INDEX, method_ctx);
         self.popn(2);
         self.push(new_ctx);
@@ -1661,7 +1711,8 @@ impl Interpreter {
         let iip = self.memory.get_ptr(block_context, CTX_INITIAL_IP_INDEX);
         self.memory.put_ptr(block_context, CTX_IP_INDEX, iip);
         self.context_put_sp(block_context, argcount as Word);
-        self.memory.put_ptr(block_context, CTX_CALLER_INDEX, self.active_context);
+        self.memory
+            .put_ptr(block_context, CTX_CALLER_INDEX, self.active_context);
         self.popn(1);
         self.new_active_context(block_context);
         Some(())
@@ -1690,7 +1741,8 @@ impl Interpreter {
         let iip = self.memory.get_ptr(block_ctx, CTX_INITIAL_IP_INDEX);
         self.memory.put_ptr(block_ctx, CTX_IP_INDEX, iip);
         self.context_put_sp(block_ctx, array_argcount as Word);
-        self.memory.put_ptr(block_ctx, CTX_CALLER_INDEX, self.active_context);
+        self.memory
+            .put_ptr(block_ctx, CTX_CALLER_INDEX, self.active_context);
         self.popn(2);
         self.new_active_context(block_ctx);
         Some(())
@@ -1741,7 +1793,7 @@ impl Interpreter {
         self.lookup_method_in_class(self.memory.get_class_of(this_rcvr));
         if self.argument_count(self.new_method) == self.argument_count {
             self.execute_new_method();
-            return Some(())
+            return Some(());
         } else {
             // BUG: really? I think this should be popn
             self.unpopn(self.argument_count);
@@ -1777,8 +1829,15 @@ impl Interpreter {
 
     fn synchronous_signal(&mut self, semaphore: OOP) -> Option<()> {
         if self.is_empty_list(semaphore) {
-            let excess_signals = self.memory.get_ptr(semaphore, EXCESS_SIGNALS_INDEX).try_as_integer()?;
-            self.memory.put_ptr(semaphore, EXCESS_SIGNALS_INDEX, OOP::try_from_integer(excess_signals+1)?);
+            let excess_signals = self
+                .memory
+                .get_ptr(semaphore, EXCESS_SIGNALS_INDEX)
+                .try_as_integer()?;
+            self.memory.put_ptr(
+                semaphore,
+                EXCESS_SIGNALS_INDEX,
+                OOP::try_from_integer(excess_signals + 1)?,
+            );
             Some(())
         } else {
             let process = self.remove_first_link_of_list(semaphore);
@@ -1797,15 +1856,18 @@ impl Interpreter {
 
         if let Some(process) = self.new_process.take() {
             let active_process = self.active_process();
-            self.memory.put_ptr(active_process, SUSPENDED_CONTEXT_INDEX, self.active_context);
-            self.memory.put_ptr(self.scheduler_pointer(), ACTIVE_PROCESS_INDEX, process);
+            self.memory
+                .put_ptr(active_process, SUSPENDED_CONTEXT_INDEX, self.active_context);
+            self.memory
+                .put_ptr(self.scheduler_pointer(), ACTIVE_PROCESS_INDEX, process);
             self.new_active_context(self.memory.get_ptr(process, SUSPENDED_CONTEXT_INDEX));
         }
     }
 
     fn active_process(&self) -> OOP {
         self.new_process.unwrap_or_else(|| {
-            self.memory.get_ptr(self.scheduler_pointer(), ACTIVE_PROCESS_INDEX)
+            self.memory
+                .get_ptr(self.scheduler_pointer(), ACTIVE_PROCESS_INDEX)
         })
     }
 
@@ -1815,7 +1877,8 @@ impl Interpreter {
 
     fn first_context(&mut self) -> OOP {
         self.new_process = None;
-        self.memory.get_ptr(self.active_process(), SUSPENDED_CONTEXT_INDEX)
+        self.memory
+            .get_ptr(self.active_process(), SUSPENDED_CONTEXT_INDEX)
     }
 
     fn remove_first_link_of_list(&mut self, linked_list: OOP) -> OOP {
@@ -1827,11 +1890,12 @@ impl Interpreter {
             self.memory.put_ptr(linked_list, LAST_LINK_INDEX, NIL_PTR);
         } else {
             let next_link = self.memory.get_ptr(first_link, NEXT_LINK_INDEX);
-            self.memory.put_ptr(linked_list, FIRST_LINK_INDEX, next_link);
+            self.memory
+                .put_ptr(linked_list, FIRST_LINK_INDEX, next_link);
         }
 
         self.memory.put_ptr(first_link, NEXT_LINK_INDEX, NIL_PTR);
-        return first_link
+        return first_link;
     }
 
     fn add_last_link_to_list(&mut self, linked_list: OOP, link: OOP) {
@@ -1852,13 +1916,15 @@ impl Interpreter {
     }
 
     fn wake_highest_priority(&mut self) -> OOP {
-        let process_lists = self.memory.get_ptr(self.scheduler_pointer(), PROCESS_LISTS_INDEX);
+        let process_lists = self
+            .memory
+            .get_ptr(self.scheduler_pointer(), PROCESS_LISTS_INDEX);
         let mut priority = self.memory.get_word_length_of(process_lists);
 
         loop {
             let process_list = self.memory.get_ptr(process_lists, priority - 1);
             if !self.is_empty_list(process_list) {
-                return self.remove_first_link_of_list(process_list)
+                return self.remove_first_link_of_list(process_list);
             }
             if priority == 0 {
                 panic!("No processes left to run");
@@ -1872,7 +1938,9 @@ impl Interpreter {
         if priority < 1 {
             panic!("Priority in the basement: {}", priority);
         }
-        let process_lists = self.memory.get_ptr(self.scheduler_pointer(), PROCESS_LISTS_INDEX);
+        let process_lists = self
+            .memory
+            .get_ptr(self.scheduler_pointer(), PROCESS_LISTS_INDEX);
         let process_list = self.memory.get_ptr(process_lists, priority as usize - 1);
         self.add_last_link_to_list(process_list, process);
         Some(())
@@ -1935,17 +2003,59 @@ struct DisplayState {
     display: OOP,
     cursor: OOP,
     // if linked, cursor_location is None
+    last_event: u128,
+
     cursor_location: Option<(isize, isize)>,
     mouse_location: (isize, isize),
 
     input_semaphore: OOP,
-    input_queue: Vec<UWord>,
+    input_queue: VecDeque<UWord>,
 
     sample_interval_ms: usize,
 }
 
+#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
+enum StEvent {
+    PointerPos(UWord, UWord),
+    Bistate(UWord, bool),
+}
+
 // IO primitives
 impl Interpreter {
+    fn push_event(&mut self, event: StEvent) {
+        // push time code
+        let elapsed = self.startup_time.elapsed().as_millis();
+        let dt = (elapsed - self.display.last_event) as u32;
+        self.display.last_event = elapsed;
+        if dt == 0 {
+            // do nothing
+        } else if dt < 0x4000 {
+            self.push_event_word(dt as UWord);
+        } else {
+            let abstime = elapsed as u32;
+            self.push_event_word(0x5000);
+            self.push_event_word((abstime >> 16) as UWord);
+            self.push_event_word(abstime as UWord);
+        }
+
+        match event {
+            StEvent::PointerPos(x, y) => {
+                self.display.mouse_location = (x as isize, y as isize);
+                self.push_event_word(x & 0xFFF | 0x1000);
+                self.push_event_word(y & 0xFFF | 0x2000);
+            }
+            StEvent::Bistate(dev, down) => {
+                let tag = if down { 0x3000 } else { 0x4000 };
+                self.push_event_word(dev | tag);
+            }
+        }
+    }
+
+    fn push_event_word(&mut self, word: UWord) {
+        self.display.input_queue.push_back(word);
+        self.asynchronous_signal(self.display.input_semaphore);
+    }
+
     fn dispatch_prim_io(&mut self) -> Option<()> {
         match self.primitive_index {
             90 => self.prim_mouse_point(),
@@ -1964,14 +2074,24 @@ impl Interpreter {
             103 => self.prim_scan_characters(),
             104 => self.prim_draw_loop(),
             105 => self.prim_string_replace(),
-            _ => None
+            _ => None,
         }
     }
 
     fn prim_mouse_point(&mut self) -> Option<()> {
-        let pt = self.memory.instantiate_class(CLASS_POINT_PTR, CLASS_POINT_SIZE, ObjectLayout::Pointer);
-        self.memory.put_ptr(pt, CLASS_POINT_X, OOP::from(self.display.mouse_location.0 as Word));
-        self.memory.put_ptr(pt, CLASS_POINT_Y, OOP::from(self.display.mouse_location.1 as Word));
+        let pt =
+            self.memory
+                .instantiate_class(CLASS_POINT_PTR, CLASS_POINT_SIZE, ObjectLayout::Pointer);
+        self.memory.put_ptr(
+            pt,
+            CLASS_POINT_X,
+            OOP::from(self.display.mouse_location.0 as Word),
+        );
+        self.memory.put_ptr(
+            pt,
+            CLASS_POINT_Y,
+            OOP::from(self.display.mouse_location.1 as Word),
+        );
         self.pop(); // pop receiver
         self.push(pt);
         Some(())
@@ -1984,7 +2104,10 @@ impl Interpreter {
         self.pop();
 
         {
-            let target = self.display.cursor_location.as_mut()
+            let target = self
+                .display
+                .cursor_location
+                .as_mut()
                 .unwrap_or(&mut self.display.mouse_location);
             target.0 = pt_x as isize;
             target.1 = pt_y as isize;
@@ -2017,8 +2140,12 @@ impl Interpreter {
     }
 
     fn prim_input_word(&mut self) -> Option<()> {
-        let word = self.display.input_queue.pop()?;
-        let item = self.long_integer_for(word as usize);
+        let word = self.display.input_queue.pop_front()?;
+        let item = if word > 16383 {
+            self.long_integer_for(word as usize)
+        } else {
+            OOP::try_from_integer(word as Word)?
+        };
         self.pop(); // pop receiver
         self.push(item);
         Some(())
@@ -2030,12 +2157,19 @@ impl Interpreter {
     }
 
     fn prim_time_words_into(&mut self) -> Option<()> {
-        let unix_time = ::std::time::SystemTime::now().duration_since(::std::time::UNIX_EPOCH).ok()?.as_secs();
+        let unix_time = ::std::time::SystemTime::now()
+            .duration_since(::std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs();
         let st_time = unix_time + 2177452800;
 
         let result_array = self.stack_value(0);
         for i in 0..4 {
-            self.vm_atput(result_array, 3-i, OOP::try_from_integer(((st_time >> (8*i)) & 0xFF) as Word)?);
+            self.vm_atput(
+                result_array,
+                3 - i,
+                OOP::try_from_integer(((st_time >> (8 * i)) & 0xFF) as Word)?,
+            );
         }
         self.pop();
         // TODO: return result array or self? Right now, returns self
@@ -2047,7 +2181,11 @@ impl Interpreter {
 
         let result_array = self.stack_value(0);
         for i in 0..4 {
-            self.vm_atput(result_array, 3-i, OOP::try_from_integer(((unix_time >> (8*i)) & 0xFF) as Word)?);
+            self.vm_atput(
+                result_array,
+                3 - i,
+                OOP::try_from_integer(((unix_time >> (8 * i)) & 0xFF) as Word)?,
+            );
         }
         self.pop();
         // TODO: return result array or self? Right now, returns self
@@ -2163,7 +2301,7 @@ impl Interpreter {
     fn dispatch_prim_private(&mut self) -> Option<()> {
         match self.primitive_index {
             // start at 128
-            _ => None
+            _ => None,
         }
     }
     /*
@@ -2184,7 +2322,9 @@ impl Interpreter {
     }
     fn interruption_point(&mut self) {
         // Any queued semaphores?
-        if self.timer_sem.is_some() && u32::wrapping_sub(self.time_millis(), self.timer_when) < 0x7FFF_FFF {
+        if self.timer_sem.is_some()
+            && u32::wrapping_sub(self.time_millis(), self.timer_when) < 0x7FFF_FFF
+        {
             let sem = self.timer_sem.take().unwrap();
             self.synchronous_signal(sem);
         }
@@ -2193,4 +2333,3 @@ impl Interpreter {
         self::display::poll_display(self);
     }
 }
-

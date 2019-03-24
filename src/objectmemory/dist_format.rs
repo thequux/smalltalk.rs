@@ -1,11 +1,11 @@
-use std::path::Path;
-use std::io::{self, prelude::*, SeekFrom};
-use std::fs::File;
-use crate::objectmemory::{ObjectMemory, OOP, ObjectLayout};
-use byteorder::{ByteOrder, BigEndian, ReadBytesExt};
 use crate::interpreter::InstanceSpecification;
+use crate::objectmemory::{ObjectLayout, ObjectMemory, OOP};
+use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
+use std::fs::File;
+use std::io::{self, prelude::*, SeekFrom};
+use std::path::Path;
 
-pub enum DistFormat{}
+pub enum DistFormat {}
 
 struct ObjTblEntry {
     flags: u16,
@@ -55,7 +55,7 @@ impl super::ImageFormat for DistFormat {
         let mut memory = super::ObjectMemory::new();
 
         // Read objects
-        for (i, entry) in raw_objtbl.iter().enumerate() {
+        for (_i, entry) in raw_objtbl.iter().enumerate() {
             if entry.is_free() {
                 memory.ref_cnt.push(0);
                 memory.objects.push(None);

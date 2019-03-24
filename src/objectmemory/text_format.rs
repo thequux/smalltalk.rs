@@ -19,8 +19,6 @@
 //! bytecode in curly braces, one instruction per line. Symbolic labels begin with a colon
 
 pub enum TextFormat {}
-use byteorder::{ByteOrder, BigEndian, ReadBytesExt};
+use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 
-impl TextFormat {
-
-}
+impl TextFormat {}

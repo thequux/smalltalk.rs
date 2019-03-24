@@ -1,4 +1,4 @@
-use byteorder::{ByteOrder as _, BigEndian};
+use byteorder::{BigEndian, ByteOrder as _};
 use std::path::Path;
 
 pub mod dist_format;
@@ -9,7 +9,6 @@ pub type UWord = u16;
 
 pub const SMALLINT_MIN: Word = -16384;
 pub const SMALLINT_MAX: Word = 16383;
-
 
 pub trait ImageFormat {
     fn load<P: AsRef<Path>>(path: P) -> std::io::Result<ObjectMemory>;
@@ -36,13 +35,12 @@ impl ObjectLayout {
     fn field_size(self) -> usize {
         match self {
             ObjectLayout::Byte => 0,
-            ObjectLayout::Word | ObjectLayout::Pointer => ::std::mem::size_of::<Word>()
+            ObjectLayout::Word | ObjectLayout::Pointer => ::std::mem::size_of::<Word>(),
         }
     }
 }
 
 impl OOP {
-
     pub fn to_pointer(mut self) -> OOP {
         OOP(self.0 & !1)
     }
@@ -52,7 +50,8 @@ impl OOP {
     }
 
     pub fn as_integer(self) -> Word {
-        self.try_as_integer().expect("Attempted to read integer value of pointer")
+        self.try_as_integer()
+            .expect("Attempted to read integer value of pointer")
     }
 
     pub fn try_as_integer(self) -> Option<Word> {
@@ -172,19 +171,19 @@ impl ObjectMemory {
     pub fn get_word(&self, oid: OOP, field: usize) -> Word {
         let obj = self.get_obj(oid);
         let off = field << 2;
-        BigEndian::read_i16(&obj.content[off .. off+2])
+        BigEndian::read_i16(&obj.content[off..off + 2])
     }
 
     pub fn put_word(&mut self, oid: OOP, field: usize, value: Word) {
         let obj = self.get_obj_mut(oid);
         let off = field << 2;
-        BigEndian::write_i16(&mut obj.content[off .. off+2], value)
+        BigEndian::write_i16(&mut obj.content[off..off + 2], value)
     }
 
     pub fn get_float(&self, oid: OOP) -> Option<f32> {
         let obj = self.get_obj(oid);
         if obj.class != CLASS_FLOAT_PTR {
-            return None
+            return None;
         }
         let mut flt_u32 = 0u32;
         for i in 0..4 {
@@ -198,7 +197,7 @@ impl ObjectMemory {
         let mut flt_u32 = value.to_bits();
         assert_eq!(obj.class, CLASS_FLOAT_PTR);
         for i in 0..4 {
-            obj.content[3-i] = (flt_u32 >> (i*8)) as u8;
+            obj.content[3 - i] = (flt_u32 >> (i * 8)) as u8;
         }
     }
 
@@ -232,7 +231,7 @@ impl ObjectMemory {
         }
         let oid = oid.as_oid();
         if self.ref_cnt.len() < oid {
-            self.ref_cnt.resize(oid+1, 0);
+            self.ref_cnt.resize(oid + 1, 0);
         }
         self.ref_cnt[oid] += 1;
     }
@@ -243,7 +242,7 @@ impl ObjectMemory {
         }
         let oid = oid.as_oid();
         if self.ref_cnt.len() < oid {
-            self.ref_cnt.resize(oid+1, 0);
+            self.ref_cnt.resize(oid + 1, 0);
         }
         self.ref_cnt[oid] -= 1;
     }
@@ -267,25 +266,21 @@ impl ObjectMemory {
         for i in 0..self.objects.len() {
             if let Some(obj) = self.objects[i].as_ref() {
                 if obj.class == oid {
-                    return Some(OOP::from(i as Word))
+                    return Some(OOP::from(i as Word));
                 }
             }
         }
-        return None
+        return None;
     }
 
     pub fn next_instance_of(&self, oid: OOP) -> Option<OOP> {
         let klass = self.get_class_of(oid);
-        let oid = if oid.is_object() {
-            oid.as_oid()
-        } else {
-            0
-        };
+        let oid = if oid.is_object() { oid.as_oid() } else { 0 };
 
         for i in oid..self.objects.len() {
             if let Some(obj) = self.objects[i].as_ref() {
                 if obj.class == klass {
-                    return Some(OOP::pointer(i))
+                    return Some(OOP::pointer(i));
                 }
             }
         }
@@ -296,7 +291,10 @@ impl ObjectMemory {
         let byte_len = nfields * layout.field_size();
 
         // find an unused object
-        let index = self.objects.iter().enumerate()
+        let index = self
+            .objects
+            .iter()
+            .enumerate()
             .find(|(index, obj)| obj.is_none())
             .map(|(index, obj)| index);
 
@@ -309,7 +307,7 @@ impl ObjectMemory {
         if layout == ObjectLayout::Pointer {
             for x in 0..nfields {
                 let off = x << 2;
-                BigEndian::write_i16(&mut new_object.content[off..off+2], NIL_PTR.0);
+                BigEndian::write_i16(&mut new_object.content[off..off + 2], NIL_PTR.0);
             }
         }
 
@@ -317,7 +315,7 @@ impl ObjectMemory {
             Some(i) => {
                 self.objects[i] = Some(new_object);
                 OOP::pointer(i)
-            },
+            }
             None => {
                 self.objects.push(Some(new_object));
                 self.ref_cnt.push(0);
@@ -333,9 +331,16 @@ impl ObjectMemory {
         self.ref_cnt.swap(p1, p2);
     }
 
-    pub fn transfer_fields(&mut self, count: usize, from_obj: OOP, from_field: usize, to_obj: OOP, to_field: usize) {
+    pub fn transfer_fields(
+        &mut self,
+        count: usize,
+        from_obj: OOP,
+        from_field: usize,
+        to_obj: OOP,
+        to_field: usize,
+    ) {
         for i in 0..count {
-            self.put_ptr(to_obj, to_field + i, self.get_ptr(from_obj, from_field+i));
+            self.put_ptr(to_obj, to_field + i, self.get_ptr(from_obj, from_field + i));
             self.put_ptr(from_obj, from_field + i, NIL_PTR);
         }
     }
@@ -344,4 +349,3 @@ impl ObjectMemory {
         32767 - self.objects.iter().filter(|x| x.is_some()).count()
     }
 }
-
