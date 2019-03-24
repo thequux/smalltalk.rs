@@ -372,7 +372,7 @@ impl Interpreter {
 
 // Instance specification
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
-struct InstanceSpecification(usize);
+pub(crate) struct InstanceSpecification(usize);
 
 impl InstanceSpecification {
     pub fn is_pointers(self) -> bool {
@@ -396,7 +396,7 @@ impl From<OOP> for InstanceSpecification {
 }
 
 impl Interpreter {
-    fn instance_specification(&self, klass: OOP) -> InstanceSpecification {
+    pub(crate) fn instance_specification(&self, klass: OOP) -> InstanceSpecification {
         self.memory.get_ptr(klass, INSTANCE_SPECIFICATION_INDEX).into()
     }
 }
@@ -449,13 +449,19 @@ impl Interpreter {
 
     pub fn cycle(&mut self) {
         self.check_process_switch();
-        let insn = self.decode_insn();
+        let (insn, sz) = Self::decode_insn(self.memory.get_bytes(self.method), self.ip);
+        self.ip += sz;
         self.dispatch(insn);
     }
 
-    pub fn decode_insn(&mut self) -> Insn {
-        let insn = self.fetch_insn_byte();
-        match insn {
+    pub fn decode_insn(bytecode: &[u8], ip: usize) -> (Insn, usize) {
+        let mut fetch_ip = ip;
+        let mut next_byte = ||{
+            fetch_ip += 1;
+            bytecode[fetch_ip-1]
+        };
+        let insn = next_byte();
+        let decoded = match insn {
             0x00...0x0F => Insn::PushReceiverVar(insn as usize & 0xF),
             0x10...0x1F => Insn::PushTemporary(insn as usize & 0xF),
             0x20...0x3F => Insn::PushLiteralConst(insn as usize & 0x1F),
@@ -478,7 +484,7 @@ impl Interpreter {
             0x7D => Insn::BlockReturn,
             0x7E...0x7F => Insn::Illegal1([insn]),
             0x80 => {
-                let next = self.fetch_insn_byte();
+                let next = next_byte();
                 let sub = next as usize & 0x3F;
                 match next & 0xC0 {
                     0x00 => Insn::PushReceiverVar(sub),
@@ -489,7 +495,7 @@ impl Interpreter {
                 }
             },
             0x81 => {
-                let next = self.fetch_insn_byte();
+                let next = next_byte();
                 let sub = next as usize & 0x3F;
                 match next & 0xC0 {
                     0x00 => Insn::StoreReceiverVar(sub),
@@ -500,7 +506,7 @@ impl Interpreter {
                 }
             },
             0x82 => {
-                let next = self.fetch_insn_byte();
+                let next = next_byte();
                 let sub = next as usize & 0x3F;
                 match next & 0xC0 {
                     0x00 => Insn::PopReceiverVar(sub),
@@ -511,21 +517,21 @@ impl Interpreter {
                 }
             }
             0x83 => {
-                let next = self.fetch_insn_byte() as usize;
+                let next = next_byte() as usize;
                 Insn::SendLiteral(next & 0x3F, next >> 6)
             },
             0x84 => {
-                let args = self.fetch_insn_byte() as usize;
-                let sel = self.fetch_insn_byte() as usize;
+                let args = next_byte() as usize;
+                let sel = next_byte() as usize;
                 Insn::SendLiteral(sel, args)
             },
             0x85 => {
-                let next = self.fetch_insn_byte() as usize;
+                let next = next_byte() as usize;
                 Insn::SendLiteralSuper(next & 0x3F, next >> 6)
             },
             0x86 => {
-                let args = self.fetch_insn_byte() as usize;
-                let sel = self.fetch_insn_byte() as usize;
+                let args = next_byte() as usize;
+                let sel = next_byte() as usize;
                 Insn::SendLiteralSuper(sel, args)
             },
             0x87 => Insn::Pop,
@@ -535,22 +541,23 @@ impl Interpreter {
             0x90...0x97 => Insn::Jump(insn as isize & 0x7 + 1),
             0x98...0x9F => Insn::JumpFalse(insn as isize & 0x7 + 1),
             0xA0...0xA7 => {
-                let next = self.fetch_insn_byte() as isize;
+                let next = next_byte() as isize;
                 Insn::Jump(((insn as isize & 0x7) - 4) << 8 + next)
             },
             0xA8...0xAB => {
-                let next = self.fetch_insn_byte() as isize;
+                let next = next_byte() as isize;
                 Insn::JumpTrue((insn as isize & 0x3) << 8 + next)
             },
             0xAC...0xAF => {
-                let next = self.fetch_insn_byte() as isize;
+                let next = next_byte() as isize;
                 Insn::JumpFalse((insn as isize & 0x3) << 8 + next)
             },
             0xB0...0xCF => Insn::SendSpecial(insn as usize - 0xB0),
             0xD0...0xDF => Insn::SendLiteral(insn as usize & 0xF, 0),
             0xE0...0xEF => Insn::SendLiteral(insn as usize & 0xF, 1),
             0xF0...0xFF => Insn::SendLiteral(insn as usize & 0xF, 2),
-        }
+        };
+        (decoded, fetch_ip - ip)
     }
 
     pub fn dispatch(&mut self, insn: Insn) {

@@ -1,10 +1,20 @@
-use byteorder::{ByteOrder as _, LittleEndian};
+use byteorder::{ByteOrder as _, BigEndian};
+use std::path::Path;
+
+pub mod dist_format;
+pub mod text_format;
 
 pub type Word = i16;
 pub type UWord = u16;
 
 pub const SMALLINT_MIN: Word = -16384;
 pub const SMALLINT_MAX: Word = 16383;
+
+
+pub trait ImageFormat {
+    fn load<P: AsRef<Path>>(path: P) -> std::io::Result<ObjectMemory>;
+    fn save<P: AsRef<Path>>(path: P, memory: &ObjectMemory) -> std::io::Result<()>;
+}
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
 pub struct OOP(Word);
@@ -136,6 +146,13 @@ struct Object {
 }
 
 impl ObjectMemory {
+    fn new() -> Self {
+        ObjectMemory {
+            objects: Vec::new(),
+            ref_cnt: Vec::new(),
+        }
+    }
+
     fn get_obj(&self, oid: OOP) -> &Object {
         self.objects[oid.as_oid()].as_ref().unwrap()
     }
@@ -155,13 +172,13 @@ impl ObjectMemory {
     pub fn get_word(&self, oid: OOP, field: usize) -> Word {
         let obj = self.get_obj(oid);
         let off = field << 2;
-        LittleEndian::read_i16(&obj.content[off .. off+2])
+        BigEndian::read_i16(&obj.content[off .. off+2])
     }
 
     pub fn put_word(&mut self, oid: OOP, field: usize, value: Word) {
         let obj = self.get_obj_mut(oid);
         let off = field << 2;
-        LittleEndian::write_i16(&mut obj.content[off .. off+2], value)
+        BigEndian::write_i16(&mut obj.content[off .. off+2], value)
     }
 
     pub fn get_float(&self, oid: OOP) -> Option<f32> {
@@ -189,6 +206,10 @@ impl ObjectMemory {
         let obj = self.instantiate_class(CLASS_FLOAT_PTR, 2, ObjectLayout::Word);
         self.put_float(obj, value);
         obj
+    }
+
+    pub fn get_bytes(&self, oid: OOP) -> &[u8] {
+        self.get_obj(oid).content.as_slice()
     }
 
     pub fn get_byte(&self, oid: OOP, off: usize) -> u8 {
@@ -279,11 +300,18 @@ impl ObjectMemory {
             .find(|(index, obj)| obj.is_none())
             .map(|(index, obj)| index);
 
-        let new_object = Object {
+        let mut new_object = Object {
             class: klass,
             layout,
             content: vec![0; byte_len],
         };
+
+        if layout == ObjectLayout::Pointer {
+            for x in 0..nfields {
+                let off = x << 2;
+                BigEndian::write_i16(&mut new_object.content[off..off+2], NIL_PTR.0);
+            }
+        }
 
         match index {
             Some(i) => {
