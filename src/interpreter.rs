@@ -1,16 +1,21 @@
 use crate::interpreter::HeaderFlag::PrimSelf;
 use crate::objectmemory::{
     ObjectLayout, ObjectMemory, UWord, Word, CANNOT_RETURN_SEL, CHARACTER_TABLE_PTR,
-    CLASS_ARRAY_PTR, CLASS_BLOCK_CONTEXT_PTR, CLASS_CHARACTER_PTR, CLASS_FLOAT_PTR,
+    CLASS_ARRAY_PTR, CLASS_BLOCK_CONTEXT_PTR, CLASS_CHARACTER_PTR,
     CLASS_LARGE_POSITIVEINTEGER_PTR, CLASS_MESSAGE_PTR, CLASS_METHOD_CONTEXT_PTR, CLASS_POINT_PTR,
     CLASS_STRING_PTR, DOES_NOT_UNDERSTAND_SEL, FALSE_PTR, MUST_BE_BOOLEAN_SEL, NIL_PTR, OOP,
     SCHEDULER_ASSOCIATION_PTR, SPECIAL_SELECTORS_PTR, TRUE_PTR,
 };
 use std::collections::VecDeque;
+use std::borrow::Cow;
 
 mod bitblt;
 mod display;
 mod startup;
+
+const DBG_INSN: bool = false;
+const DBG_CALL: bool = true;
+const DBG_LOOKUP: bool = false;
 
 pub struct Interpreter {
     memory: ObjectMemory,
@@ -22,6 +27,13 @@ pub struct Interpreter {
     // These should really be unsigned
     ip: usize,
     sp: usize,
+
+    cycle: usize,
+    call_depth: usize,
+
+    // benchmark
+    bmark_cycles: usize,
+    bmark_lastprint: u64,
 
     // Message lookup process
     message_selector: OOP,
@@ -92,7 +104,7 @@ impl MethodHeader {
 
     pub fn flag_value(self) -> HeaderFlag {
         use self::HeaderFlag::*;
-        match (self.0 >> 12) & 0x5 {
+        match (self.0 >> 12) & 0x7 {
             count @ (0...4) => HeaderFlag::Normal(count),
             5 => PrimSelf,
             6 => PrimReturn,
@@ -134,6 +146,7 @@ impl Interpreter {
     }
 
     // method headers
+    #[allow(unused)]
     fn header_extension(&self, method: OOP) -> HeaderExt {
         self.header_extension_fast(method, self.method_header_of(method))
     }
@@ -209,7 +222,7 @@ impl Interpreter {
     }
 
     pub fn block_argument_count(&mut self, context: OOP) -> usize {
-        self.memory.get_ptr(context, CTX_SP_INDEX).as_integer() as usize
+        self.memory.get_ptr(context, CTX_BLOCK_ARG_COUNT_INDEX).as_integer() as usize
     }
 
     pub fn is_block_ctx(&self, context: OOP) -> bool {
@@ -229,13 +242,20 @@ impl Interpreter {
         self.sp = self.context_get_sp(self.active_context) as UWord as usize
             + CTX_TEMPFRAME_START_INDEX
             - 1;
+
+        let mut sender = self.active_context;
+        self.call_depth = 0;
+        while sender != NIL_PTR {
+            self.call_depth += 1;
+            sender = self.memory.get_ptr(sender, CTX_SENDER_INDEX);
+        }
     }
 
     pub fn save_ctx(&mut self) {
         self.context_put_ip(self.active_context, (self.ip + 1) as Word);
         self.context_put_sp(
             self.active_context,
-            (self.sp - CTX_TEMPFRAME_START_INDEX + 1) as Word,
+            (self.sp + 1 - CTX_TEMPFRAME_START_INDEX) as Word,
         );
     }
 
@@ -295,7 +315,7 @@ impl Interpreter {
 // method lookup constants
 const SUPERCLASS_INDEX: usize = 0;
 const MESSAGE_DICTIONARY_INDEX: usize = 1;
-const INSTANCE_SPECIFICATION_INDEX: usize = 2;
+pub const INSTANCE_SPECIFICATION_INDEX: usize = 2;
 const METHOD_ARRAY_INDEX: usize = 1;
 const SELECTOR_START: usize = 2;
 
@@ -335,6 +355,9 @@ impl Interpreter {
     pub fn lookup_method_in_class(&mut self, klass: OOP) -> bool {
         let mut current_class = klass;
         while current_class != NIL_PTR {
+            if DBG_LOOKUP {
+                println!("Looking in {:?}", current_class);
+            }
             let dictionary = self.memory.get_ptr(current_class, MESSAGE_DICTIONARY_INDEX);
             if self.lookup_method_in_dict(dictionary) {
                 return true;
@@ -370,7 +393,7 @@ impl Interpreter {
         self.memory.transfer_fields(
             self.argument_count,
             self.active_context,
-            self.sp - (self.argument_count - 1),
+            self.sp - self.argument_count + 1,
             argument_array,
             0,
         );
@@ -413,6 +436,7 @@ impl Interpreter {
     }
 }
 
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
 pub enum Insn {
     PushReceiverVar(usize),
     PushTemporary(usize),
@@ -455,7 +479,16 @@ impl Interpreter {
 
     pub fn interpret(&mut self) {
         loop {
-            self.cycle()
+            self.cycle();
+
+            let bmark_time = self.startup_time.elapsed().as_secs() / 5;
+            if bmark_time != self.bmark_lastprint {
+                self.bmark_lastprint = bmark_time;
+                let cycles = (self.cycle - self.bmark_cycles)/5;
+                self.bmark_cycles = self.cycle;
+                println!("BMRK Cycles/s: {}", cycles);
+
+            }
         }
     }
 
@@ -463,14 +496,20 @@ impl Interpreter {
         self.check_process_switch();
         let (insn, sz) = Self::decode_insn(self.memory.get_bytes(self.method), self.ip);
         self.ip += sz;
+        self.cycle += 1;
+        if DBG_INSN {
+            println!("[cycle={}] Insn: {:?}", self.cycle, insn);
+        }
         self.dispatch(insn);
     }
 
     pub fn decode_insn(bytecode: &[u8], ip: usize) -> (Insn, usize) {
         let mut fetch_ip = ip;
         let mut next_byte = || {
+            let byte = bytecode[fetch_ip];
+//            println!("Insn byte: {:3} (0x{:x})", byte, byte);
             fetch_ip += 1;
-            bytecode[fetch_ip - 1]
+            byte
         };
         let insn = next_byte();
         let decoded = match insn {
@@ -530,7 +569,7 @@ impl Interpreter {
             }
             0x83 => {
                 let next = next_byte() as usize;
-                Insn::SendLiteral(next & 0x3F, next >> 6)
+                Insn::SendLiteral(next & 0x1F, next >> 5)
             }
             0x84 => {
                 let args = next_byte() as usize;
@@ -539,7 +578,7 @@ impl Interpreter {
             }
             0x85 => {
                 let next = next_byte() as usize;
-                Insn::SendLiteralSuper(next & 0x3F, next >> 6)
+                Insn::SendLiteralSuper(next & 0x1F, next >> 5)
             }
             0x86 => {
                 let args = next_byte() as usize;
@@ -550,19 +589,19 @@ impl Interpreter {
             0x88 => Insn::Dup,
             0x89 => Insn::PushCtx,
             0x8A...0x8F => Insn::Illegal1([insn]),
-            0x90...0x97 => Insn::Jump(insn as isize & 0x7 + 1),
-            0x98...0x9F => Insn::JumpFalse(insn as isize & 0x7 + 1),
+            0x90...0x97 => Insn::Jump((insn as isize & 0x7) + 1),
+            0x98...0x9F => Insn::JumpFalse((insn as isize & 0x7) + 1),
             0xA0...0xA7 => {
                 let next = next_byte() as isize;
-                Insn::Jump(((insn as isize & 0x7) - 4) << 8 + next)
+                Insn::Jump((((insn as isize & 0x7) - 4) << 8) + next)
             }
             0xA8...0xAB => {
                 let next = next_byte() as isize;
-                Insn::JumpTrue((insn as isize & 0x3) << 8 + next)
+                Insn::JumpTrue(((insn as isize & 0x3) << 8) + next)
             }
             0xAC...0xAF => {
                 let next = next_byte() as isize;
-                Insn::JumpFalse((insn as isize & 0x3) << 8 + next)
+                Insn::JumpFalse(((insn as isize & 0x3) << 8) + next)
             }
             0xB0...0xCF => Insn::SendSpecial(insn as usize - 0xB0),
             0xD0...0xDF => Insn::SendLiteral(insn as usize & 0xF, 0),
@@ -671,6 +710,9 @@ impl Interpreter {
             return;
         }
 
+        if DBG_CALL {
+            println!("[cycle={}] {:depth$} RETN {}", self.cycle, "", self.obj_name(value), depth = self.call_depth);
+        }
         self.memory.inc_ref(value);
         self.return_to_active_context(ctx);
         self.push(value);
@@ -701,6 +743,12 @@ impl Interpreter {
     }
 
     fn send_selector_to_class(&mut self, klass: OOP) {
+        if DBG_CALL {
+            print!("[cycle={}] {:depth$} SEND ", self.cycle, "", depth = self.call_depth);
+            self.print_methodcall();
+            println!();
+        }
+//        println!("Send selector {:?}", read_st_string(&self.memory, self.message_selector));
         self.find_new_method_in_class(klass);
         self.execute_new_method();
     }
@@ -711,6 +759,7 @@ impl Interpreter {
         let found = cached.selector == self.message_selector && cached.klass == klass;
 
         if found {
+//            println!("Cached method {:?}", cached.new_method);
             self.new_method = cached.new_method;
             self.primitive_index = cached.primitive_index;
         } else {
@@ -724,8 +773,11 @@ impl Interpreter {
     }
 
     fn execute_new_method(&mut self) {
+//        println!("Executing method {:?}", self.new_method);
         if self.primitive_response().is_none() {
             self.activate_new_method();
+        } else {
+//            println!("Handled primitively");
         }
     }
 
@@ -733,9 +785,17 @@ impl Interpreter {
         if self.primitive_index == 0 {
             let header = self.method_header_of(self.new_method);
             match header.flag_value() {
-                HeaderFlag::PrimSelf => Some(()),
+                HeaderFlag::PrimSelf => {
+                    if DBG_INSN {
+                        println!("Prim self");
+                    }
+                    Some(())
+                },
                 HeaderFlag::PrimReturn => {
                     let field_idx = header.field_index();
+                    if DBG_INSN {
+                        println!("Prim return {}", field_idx);
+                    }
                     let this_rcvr = self.pop();
                     let value = self.memory.get_ptr(this_rcvr, field_idx);
                     self.push(value);
@@ -744,12 +804,42 @@ impl Interpreter {
                 _ => None,
             }
         } else {
-            self.dispatch_prim()
+            let res = self.dispatch_prim();
+            if DBG_CALL {
+                let failflag = if res.is_none() {
+                    " FAIL".to_string()
+                } else {
+                    format!(" => {}", self.obj_name(self.stack_top()))
+                };
+                println!("[cycle={}] {:depth$} PRIM {}{}",
+                         self.cycle, "", self.primitive_index, failflag,
+                         depth = self.call_depth);
+            }
+            res
         }
     }
 
     fn activate_new_method(&mut self) {
-        unimplemented!()
+        let context_size = if self.method_header_of(self.new_method).large_context_flag() {
+            32 + CTX_TEMPFRAME_START_INDEX
+        } else {
+            12 + CTX_TEMPFRAME_START_INDEX
+        };
+        let new_ctx = self.memory.instantiate_class(CLASS_METHOD_CONTEXT_PTR, context_size, ObjectLayout::Pointer);
+        self.memory.put_ptr(new_ctx, CTX_SENDER_INDEX, self.active_context);
+        let new_method_header = self.method_header_of(self.new_method);
+        self.context_put_ip(new_ctx, new_method_header.initial_ip() as Word);
+        self.context_put_sp(new_ctx, new_method_header.temporary_count() as Word);
+        self.memory.put_ptr(new_ctx, CTX_METHOD_INDEX, self.new_method);
+        self.memory.transfer_fields(
+            self.argument_count + 1,
+            self.active_context,
+            self.sp - self.argument_count,
+            new_ctx,
+            CTX_RECEIVER_INDEX,
+        );
+        self.popn(self.argument_count + 1);
+        self.new_active_context(new_ctx)
     }
 
     fn conditional_jump(&mut self, condition: OOP, offset: isize) {
@@ -758,7 +848,7 @@ impl Interpreter {
         if value == condition {
             self.ip = (self.ip as isize + offset) as usize;
         } else {
-            if (value != TRUE_PTR) & (value != FALSE_PTR) {
+            if (value != TRUE_PTR) && (value != FALSE_PTR) {
                 self.unpopn(1);
                 self.send_selector(MUST_BE_BOOLEAN_SEL, 0);
             }
@@ -817,17 +907,18 @@ impl Interpreter {
                 i += 1;
             }
 
+            if i < 2 {
+                i += 2;
+            }
             let obj = self.memory.instantiate_class(
                 CLASS_LARGE_POSITIVEINTEGER_PTR,
                 i,
                 ObjectLayout::Byte,
             );
             itmp = int;
-            i = 0;
-            while itmp != 0 {
-                self.memory.put_byte(obj, i, (itmp & 0xff) as u8);
+            for j in 1..i {
+                self.memory.put_byte(obj, j, (itmp & 0xff) as u8);
                 itmp >>= 8;
-                i += 1;
             }
             obj
         }
@@ -1059,7 +1150,7 @@ impl Interpreter {
     defprim_compare!(prim_eq, ==);
     defprim_compare!(prim_ne, !=);
     defprim_compare!(prim_lt, <);
-    defprim_compare!(prim_gt, <);
+    defprim_compare!(prim_gt, >);
     defprim_compare!(prim_le, <=);
     defprim_compare!(prim_ge, >=);
 
@@ -1327,8 +1418,9 @@ impl Interpreter {
     fn prim_at(&mut self) -> Option<()> {
         let index = self.long_integer_value_of(self.stack_value(0))?;
         let array = self.stack_value(1);
+        let klass = self.memory.get_class_of(array);
         self.check_indexable_bounds(index, array)?;
-        let index = index + self.instance_specification(array).fixed_fields();
+        let index = index + self.instance_specification(klass).fixed_fields();
         let result = self.vm_at(array, index);
         self.popn(2);
         self.push(result);
@@ -1339,8 +1431,9 @@ impl Interpreter {
         let value = self.stack_value(0);
         let index = self.long_integer_value_of(self.stack_value(1))?;
         let array = self.stack_value(2);
+        let klass = self.memory.get_class_of(array);
         self.check_indexable_bounds(index, array)?;
-        let index = index + self.instance_specification(array).fixed_fields();
+        let index = index + self.instance_specification(klass).fixed_fields();
         self.vm_atput(array, index, value)?;
         self.popn(3);
         self.push(value);
@@ -1697,6 +1790,7 @@ impl Interpreter {
         let block_context = self.stack_value(self.argument_count);
         let argcount = self.block_argument_count(block_context);
         if self.argument_count != argcount {
+            println!("Wrong argcount (got {}, expected {})", self.argument_count, argcount);
             return None;
         }
 
@@ -2325,11 +2419,68 @@ impl Interpreter {
         if self.timer_sem.is_some()
             && u32::wrapping_sub(self.time_millis(), self.timer_when) < 0x7FFF_FFF
         {
+            println!("Timer semaphore triggered");
             let sem = self.timer_sem.take().unwrap();
             self.synchronous_signal(sem);
         }
 
         // Any display processing?
         self::display::poll_display(self);
+    }
+}
+
+pub fn read_st_string(memory: &ObjectMemory, oop: OOP) -> Cow<str> {
+    String::from_utf8_lossy(memory.get_bytes(oop))
+}
+
+impl Interpreter {
+    pub fn class_name(&self, klass: OOP) -> Cow<str> {
+
+
+        let name = self.memory.get_ptr(klass, 6); // Class::name
+        if self.memory.get_class_of(name) != OOP::pointer(0x1C) {
+            return Cow::Borrowed("Wut?");
+        } else {
+            read_st_string(&self.memory, name)
+        }
+    }
+
+    pub fn obj_name(&self, obj: OOP) -> String {
+        if obj.is_integer() {
+            return obj.as_integer().to_string()
+        } else if obj == NIL_PTR {
+            return "nil".to_string()
+        }
+        match self.memory.get_class_of(obj) {
+            OOP(0x38) => format!("#{}", read_st_string(&self.memory, obj)),
+            CLASS_STRING_PTR => format!("{:?}", read_st_string(&self.memory, obj)),
+            CLASS_LARGE_POSITIVEINTEGER_PTR => {
+                let digits = self.memory.get_bytes(obj);
+                let mut result = format!("LargePositiveInteger({}, ", digits.len());
+                for digit in digits.iter().rev() {
+                    result += &format!("{:02x}", digit);
+                }
+                result.push(')');
+                return result;
+            }
+            klass => {
+                if self.memory.get_class_of(klass) == OOP::pointer(0x1E) {
+                    format!("({} class)", self.class_name(obj))
+                } else {
+                    format!("a{}", self.class_name(klass))
+                }
+            }
+        }
+    }
+
+    pub fn print_methodcall(&self) {
+        let rcvr = self.stack_value(self.argument_count);
+        print!("{} {}",
+               self.obj_name(rcvr),
+               read_st_string(&self.memory, self.message_selector));
+        for i in 0..self.argument_count {
+            let arg = self.stack_value(self.argument_count - i - 1);
+            print!(" {}", self.obj_name(arg));
+        }
     }
 }

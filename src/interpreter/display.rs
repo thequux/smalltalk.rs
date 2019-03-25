@@ -1,13 +1,12 @@
-use crate::interpreter::Interpreter;
+use crate::interpreter::{Interpreter, StEvent};
 use sdl2::event::Event;
 use sdl2::pixels::{Color, PixelFormatEnum};
-use std::time::Instant;
+use crate::objectmemory::UWord;
 
 pub struct StDisplay {
     last_frame: u128,
 
     sdl_ctx: sdl2::Sdl,
-    video: sdl2::VideoSubsystem,
     canvas: sdl2::render::WindowCanvas,
     event_pump: sdl2::EventPump,
 }
@@ -30,7 +29,6 @@ impl StDisplay {
         Self {
             sdl_ctx: ctx,
             last_frame: 0,
-            video,
             canvas,
             event_pump,
         }
@@ -42,13 +40,15 @@ pub fn poll_display(interp: &mut Interpreter) {
     while let Some(event) = interp.display_impl.event_pump.poll_event() {
         match event {
             Event::Quit { .. } => {
-                println!("Quit requested");
+                ::std::process::exit(0);
             }
             Event::KeyDown {
                 scancode, repeat, ..
             } => {}
             Event::KeyUp { .. } => {}
-            Event::MouseMotion { .. } => {}
+            Event::MouseMotion { x, y, .. } => {
+//                interp.push_event(StEvent::PointerPos(x as UWord, y as UWord));
+            }
             Event::MouseButtonDown { .. } => {}
             Event::MouseButtonUp { .. } => {}
             Event::FingerDown { .. } => {}
@@ -59,8 +59,9 @@ pub fn poll_display(interp: &mut Interpreter) {
     }
 
     // render display
-    let frame_no = interp.startup_time.elapsed().as_millis() * 6 / 100;
+    let frame_no = interp.startup_time.elapsed().as_millis() * 6 / 1000;
     if interp.display_impl.last_frame < frame_no {
+        println!("Triggered frame");
         interp.display_impl.last_frame = frame_no;
         if render_display(interp).is_none() {
             let canvas = &mut interp.display_impl.canvas;
@@ -87,6 +88,8 @@ fn render_display(interp: &mut Interpreter) -> Option<()> {
         .try_as_integer()?;
 
     let mut raw_owned = display_raw.to_vec();
+
+    println!("DISP size: {}x{}", display_w, display_h);
 
     let image = sdl2::surface::Surface::from_data(
         &mut raw_owned[..],

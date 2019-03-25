@@ -12,6 +12,10 @@ impl super::Interpreter {
             home_context: NIL_PTR,
             method: NIL_PTR,
             receiver: NIL_PTR,
+            cycle: 0,
+            call_depth: 0,
+            bmark_cycles: 0,
+            bmark_lastprint: 0,
             ip: 0,
             sp: 0,
             message_selector: NIL_PTR,
@@ -36,6 +40,8 @@ impl super::Interpreter {
             timer_sem: None,
             timer_when: 0,
         };
+
+        interp.memory.pad_table();
 
         // load the context
         interp.active_context = interp

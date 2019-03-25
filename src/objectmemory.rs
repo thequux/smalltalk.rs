@@ -1,5 +1,6 @@
 use byteorder::{BigEndian, ByteOrder as _};
 use std::path::Path;
+use std::fmt::Debug;
 
 pub mod dist_format;
 pub mod text_format;
@@ -15,8 +16,8 @@ pub trait ImageFormat {
     fn save<P: AsRef<Path>>(path: P, memory: &ObjectMemory) -> std::io::Result<()>;
 }
 
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
-pub struct OOP(Word);
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
+pub struct OOP(pub Word);
 
 impl Default for OOP {
     fn default() -> Self {
@@ -34,8 +35,18 @@ pub enum ObjectLayout {
 impl ObjectLayout {
     fn field_size(self) -> usize {
         match self {
-            ObjectLayout::Byte => 0,
+            ObjectLayout::Byte => 1,
             ObjectLayout::Word | ObjectLayout::Pointer => ::std::mem::size_of::<Word>(),
+        }
+    }
+}
+
+impl Debug for OOP {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        if self.is_object() {
+            write!(f, "@0x{:X}", self.0 as u16)
+        } else {
+            write!(f, "$0x{:X}", self.as_integer())
         }
     }
 }
@@ -116,10 +127,10 @@ pub const CLASS_MESSAGE_PTR: OOP = OOP::pointer(16);
 pub const CLASS_CHARACTER_PTR: OOP = OOP::pointer(20);
 pub const DOES_NOT_UNDERSTAND_SEL: OOP = OOP::pointer(21);
 pub const CANNOT_RETURN_SEL: OOP = OOP::pointer(22);
-pub const MUST_BE_BOOLEAN_SEL: OOP = OOP::pointer(52);
+pub const MUST_BE_BOOLEAN_SEL: OOP = OOP::pointer(26);
 
-pub const SPECIAL_SELECTORS_PTR: OOP = OOP::pointer(48);
-pub const CHARACTER_TABLE_PTR: OOP = OOP::pointer(50);
+pub const SPECIAL_SELECTORS_PTR: OOP = OOP::pointer(24);
+pub const CHARACTER_TABLE_PTR: OOP = OOP::pointer(25);
 
 impl From<i16> for OOP {
     fn from(v: i16) -> Self {
@@ -170,13 +181,13 @@ impl ObjectMemory {
 
     pub fn get_word(&self, oid: OOP, field: usize) -> Word {
         let obj = self.get_obj(oid);
-        let off = field << 2;
+        let off = field * 2;
         BigEndian::read_i16(&obj.content[off..off + 2])
     }
 
     pub fn put_word(&mut self, oid: OOP, field: usize, value: Word) {
         let obj = self.get_obj_mut(oid);
-        let off = field << 2;
+        let off = field * 2;
         BigEndian::write_i16(&mut obj.content[off..off + 2], value)
     }
 
@@ -306,7 +317,7 @@ impl ObjectMemory {
 
         if layout == ObjectLayout::Pointer {
             for x in 0..nfields {
-                let off = x << 2;
+                let off = x << 1;
                 BigEndian::write_i16(&mut new_object.content[off..off + 2], NIL_PTR.0);
             }
         }
@@ -347,5 +358,14 @@ impl ObjectMemory {
 
     pub fn oops_left(&self) -> usize {
         32767 - self.objects.iter().filter(|x| x.is_some()).count()
+    }
+
+    pub fn pad_table(&mut self) {
+        while self.objects.len() < 32767 {
+            self.objects.push(None);
+        }
+        while self.ref_cnt.len() < 32767 {
+            &self.ref_cnt.push(0);
+        }
     }
 }

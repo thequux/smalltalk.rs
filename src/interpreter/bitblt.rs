@@ -1,4 +1,4 @@
-use crate::objectmemory::{ObjectMemory, UWord, Word, NIL_PTR, OOP};
+use crate::objectmemory::{Word, NIL_PTR, OOP};
 
 static RIGHT_MASKS: [i16; 17] = [
     0x0000, 0x0001, 0x0003, 0x0007, 0x000F, 0x001F, 0x003F, 0x007F, 0x00FF, 0x01FF, 0x03FF, 0x07FF,
@@ -225,8 +225,8 @@ impl super::Interpreter {
     }
 
     fn copy_loop(&mut self, state: &mut BitBltState) -> Option<()> {
-        let mut prev_word = 0;
-        for i in 1..state.h + 1 {
+        let mut prev_word;
+        for _i in 1..state.h + 1 {
             let halftone_word = if state.halftone_form != NIL_PTR {
                 self.memory
                     .get_word(state.halftone_bits, (state.dy & 0xF) as usize)
