@@ -26,6 +26,7 @@ pub struct BitBltState {
 
     source_x: Word,
     source_y: Word,
+    source_wordcount: Word,
 
     source_bits: OOP,
     source_raster: Word,
@@ -158,6 +159,7 @@ impl super::Interpreter {
             floor_divmod(self.get_integer(state.dest_form, FORM_WIDTH_IDX)? - 1, 16).0 + 1;
         if state.source_form != NIL_PTR {
             state.source_bits = self.memory.get_ptr(state.source_form, FORM_BITS_IDX);
+            state.source_wordcount = self.memory.get_word_length_of(state.source_bits) as Word;
             state.source_raster =
                 floor_divmod(self.get_integer(state.source_form, FORM_WIDTH_IDX)? - 1, 16).0 + 1;
         }
@@ -171,7 +173,7 @@ impl super::Interpreter {
         let start_bits = 16 - (state.dx & 0xF);
         state.mask1 = RIGHT_MASKS[start_bits as usize] as Word;
         // how many bits in last word
-        let end_bits = 15 - (state.dx + state.w - 1) & 0xF;
+        let end_bits = 15 - ((state.dx + state.w - 1) & 0xF);
         state.mask2 = !RIGHT_MASKS[end_bits as usize] as Word;
 
         state.skew_mask = if state.skew == 0 {
@@ -239,8 +241,10 @@ impl super::Interpreter {
         let mut prev_word;
         for _i in 1..state.h + 1 {
             let halftone_word = if state.halftone_form != NIL_PTR {
-                self.memory
-                    .get_word(state.halftone_bits, (state.dy & 0xF) as usize)
+                let word = self.memory
+                    .get_word(state.halftone_bits, (state.dy & 0xF) as usize);
+                state.dy += state.v_dir;
+                word
             } else {
                 ALL_ONES
             };
@@ -258,13 +262,16 @@ impl super::Interpreter {
                 // horizontal inner loop
                 if state.source_form != NIL_PTR {
                     // if source used
-                    let this_word = self
-                        .memory
-                        .get_word(state.source_bits, state.source_index as usize);
+                    let this_word = if state.source_index >= state.source_wordcount {
+                        0
+                    } else {
+                        self.memory.get_word(state.source_bits, state.source_index as usize)
+                    };
                     skew_word = (prev_word & state.skew_mask) | (this_word & !state.skew_mask);
                     prev_word = this_word;
                     // 16-bit rotate
-                    skew_word = skew_word << state.skew | skew_word >> ((16 - state.skew) & 0xF);
+//                    skew_word = (skew_word << state.skew | skew_word >> ((16 - state.skew) & 0xF);
+                    skew_word = skew_word.rotate_left(state.skew as u32);
                 }
                 let merge_word = Self::merge(
                     state.combination_rule,
