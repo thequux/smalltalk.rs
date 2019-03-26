@@ -406,6 +406,7 @@ impl Interpreter {
 
         self.create_actual_message();
 
+        println!("[cycle={}] {:depth$} DNU", self.cycle, "", depth = self.call_depth);
         self.message_selector = DOES_NOT_UNDERSTAND_SEL;
         return self.lookup_method_in_class(klass);
     }
@@ -1049,7 +1050,7 @@ impl Interpreter {
                 ObjectLayout::Byte,
             );
             itmp = int;
-            for j in 1..i {
+            for j in 0..i {
                 self.memory.put_byte(obj, j, (itmp & 0xff) as u8);
                 itmp >>= 8;
             }
@@ -1832,7 +1833,7 @@ impl Interpreter {
         let rcvr = self.stack_value(0);
         if rcvr.is_integer() {
             self.popn(1);
-            self.push(rcvr.to_smallint());
+            self.push(rcvr.to_pointer());
             Some(())
         } else {
             None
@@ -1843,7 +1844,7 @@ impl Interpreter {
         let rcvr = self.stack_top();
         if rcvr.is_object() {
             self.popn(1);
-            self.push(rcvr.to_pointer());
+            self.push(rcvr.to_smallint());
             Some(())
         } else {
             None
@@ -2065,6 +2066,10 @@ impl Interpreter {
     }
 
     fn synchronous_signal(&mut self, semaphore: OOP) -> Option<()> {
+        if semaphore == NIL_PTR {
+            println!("Signalled nil");
+            return Some(())
+        }
         if self.is_empty_list(semaphore) {
             let excess_signals = self
                 .memory
@@ -2078,6 +2083,7 @@ impl Interpreter {
             Some(())
         } else {
             let process = self.remove_first_link_of_list(semaphore);
+//            println!("Resumed {:?} from semaphore signal", process);
             self.resume(process)
         }
     }
@@ -2092,6 +2098,7 @@ impl Interpreter {
         }
 
         if let Some(process) = self.new_process.take() {
+//            println!("Switched process");
             let active_process = self.active_process();
             self.memory
                 .put_ptr(active_process, SUSPENDED_CONTEXT_INDEX, self.active_context);
@@ -2161,6 +2168,7 @@ impl Interpreter {
         loop {
             let process_list = self.memory.get_ptr(process_lists, priority - 1);
             if !self.is_empty_list(process_list) {
+//                println!("Woke process at priority {}", priority);
                 return self.remove_first_link_of_list(process_list);
             }
             if priority == 0 {
@@ -2193,7 +2201,9 @@ impl Interpreter {
         let active_priority = self.get_integer(active_process, PRIOTITY_INDEX)?;
         let new_priority = self.get_integer(process, PRIOTITY_INDEX)?;
         if new_priority > active_priority {
-            self.sleep(active_process)
+            self.sleep(active_process)?;
+            self.transfer_to(process);
+            Some(())
         } else {
             self.sleep(process)
         }
@@ -2207,6 +2217,7 @@ impl Interpreter {
         let rcvr = self.stack_top();
         let excess_signals = self.get_integer(rcvr, EXCESS_SIGNALS_INDEX)?;
         if excess_signals > 0 {
+            println!("Process {:?} waits on {:?}", self.active_process(), rcvr);
             self.put_integer(rcvr, EXCESS_SIGNALS_INDEX, excess_signals - 1)
         } else {
             self.add_last_link_to_list(rcvr, self.active_process());
@@ -2254,6 +2265,7 @@ struct DisplayState {
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 enum StEvent {
     PointerPos(UWord, UWord),
+    /// Device, down
     Bistate(UWord, bool),
 }
 
@@ -2266,7 +2278,7 @@ impl Interpreter {
         self.display.last_event = elapsed;
         if dt == 0 {
             // do nothing
-        } else if dt < 0x4000 {
+        } else if dt < 0x1000 {
             self.push_event_word(dt as UWord);
         } else {
             let abstime = elapsed as u32;
@@ -2278,8 +2290,8 @@ impl Interpreter {
         match event {
             StEvent::PointerPos(x, y) => {
                 self.display.mouse_location = (x as isize, y as isize);
-                self.push_event_word(x & 0xFFF | 0x1000);
-                self.push_event_word(y & 0xFFF | 0x2000);
+                self.push_event_word((x & 0xFFF) | 0x1000);
+                self.push_event_word((y & 0xFFF) | 0x2000);
             }
             StEvent::Bistate(dev, down) => {
                 let tag = if down { 0x3000 } else { 0x4000 };
@@ -2289,11 +2301,13 @@ impl Interpreter {
     }
 
     fn push_event_word(&mut self, word: UWord) {
+        println!("Sent word {:04x}", word);
         self.display.input_queue.push_back(word);
-        self.asynchronous_signal(self.display.input_semaphore);
+        self.synchronous_signal(self.display.input_semaphore);
     }
 
     fn dispatch_prim_io(&mut self) -> Option<()> {
+//        println!("Dispatch {}", self.primitive_index);
         match self.primitive_index {
             90 => self.prim_mouse_point(),
             91 => self.prim_cursor_loc_put(),
@@ -2364,6 +2378,7 @@ impl Interpreter {
 
     fn prim_input_semaphore(&mut self) -> Option<()> {
         // TODO: error handling
+        println!("Set input semaphore to {:?}", self.stack_top());
         self.display.input_semaphore = self.pop();
         Some(())
     }
@@ -2377,7 +2392,9 @@ impl Interpreter {
 
     fn prim_input_word(&mut self) -> Option<()> {
         let word = self.display.input_queue.pop_front()?;
-        let item = if word > 16383 {
+        println!("Input word {:04x}", word);
+        let item = if word >= 0x4000 {
+            println!("Unexpectedly long word");
             self.long_integer_for(word as usize)
         } else {
             OOP::try_from_integer(word as Word)?
@@ -2433,10 +2450,12 @@ impl Interpreter {
         let semaphore = self.stack_value(1);
 
         let mut when = 0;
-        for i in 0..4 {
+        println!("Scheduling timer...");
+        for i in 0..self.memory.get_byte_length_of(when_array) {
             let byte = self.vm_at(when_array, i).try_as_integer()? as u8 as u32;
-            when = (when << 8) + byte;
+            when |= byte << (i * 8);
         }
+        println!("Scheduled timer for {}", when);
         self.timer_when = when;
         self.timer_sem = Some(semaphore);
         self.popn(2);
@@ -2631,12 +2650,13 @@ impl Interpreter {
     pub fn print_methodcall(&self) -> String{
         let rcvr = self.stack_value(self.argument_count);
         let mut result =
-            format!("{} {}",
+            format!("{}({:?}) {}",
                     self.obj_name(rcvr),
+                    rcvr,
                     read_st_string(&self.memory, self.message_selector));
         for i in 0..self.argument_count {
             let arg = self.stack_value(self.argument_count - i - 1);
-            result += &format!(" {}", self.obj_name(arg));
+            result += &format!(" {}({:?})", self.obj_name(arg), arg);
         }
         result
     }
