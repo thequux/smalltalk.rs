@@ -1,7 +1,7 @@
 use crate::interpreter::{Interpreter, StEvent};
 use sdl2::event::Event;
 use sdl2::pixels::{Color, PixelFormatEnum};
-use crate::objectmemory::UWord;
+use crate::objectmemory::{UWord, NIL_PTR};
 
 pub struct StDisplay {
     last_frame: u128,
@@ -59,7 +59,7 @@ pub fn poll_display(interp: &mut Interpreter) {
     }
 
     // render display
-    let frame_no = interp.startup_time.elapsed().as_millis() * 6 / 1000;
+    let frame_no = interp.startup_time.elapsed().as_millis() * 6 / 100;
     if interp.display_impl.last_frame < frame_no {
 //        println!("Triggered frame");
         interp.display_impl.last_frame = frame_no;
@@ -76,6 +76,9 @@ pub fn poll_display(interp: &mut Interpreter) {
 fn render_display(interp: &mut Interpreter) -> Option<()> {
     use super::bitblt::{FORM_BITS_IDX, FORM_HEIGHT_IDX, FORM_WIDTH_IDX};
     let display_form = interp.display.display;
+    if display_form == NIL_PTR {
+        return None;
+    }
     let display_bits = interp.memory.get_ptr(display_form, FORM_BITS_IDX);
     let display_raw = interp.memory.get_bytes(display_bits);
     let display_w = interp
