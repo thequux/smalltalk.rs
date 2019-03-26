@@ -1,6 +1,8 @@
 use byteorder::{BigEndian, ByteOrder as _};
 use std::path::Path;
 use std::fmt::Debug;
+use crate::objectmemory::ObjectLayout::Pointer;
+use crate::interpreter::MethodHeader;
 
 pub mod dist_format;
 pub mod text_format;
@@ -16,7 +18,7 @@ pub trait ImageFormat {
     fn save<P: AsRef<Path>>(path: P, memory: &ObjectMemory) -> std::io::Result<()>;
 }
 
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct OOP(pub Word);
 
 impl Default for OOP {
@@ -124,6 +126,7 @@ pub const CLASS_BLOCK_CONTEXT_PTR: OOP = OOP::pointer(12);
 pub const CLASS_POINT_PTR: OOP = OOP::pointer(13);
 pub const CLASS_LARGE_POSITIVEINTEGER_PTR: OOP = OOP::pointer(14);
 pub const CLASS_MESSAGE_PTR: OOP = OOP::pointer(16);
+pub const CLASS_COMPILED_METHOD_PTR: OOP = OOP::pointer(17);
 pub const CLASS_CHARACTER_PTR: OOP = OOP::pointer(20);
 pub const DOES_NOT_UNDERSTAND_SEL: OOP = OOP::pointer(21);
 pub const CANNOT_RETURN_SEL: OOP = OOP::pointer(22);
@@ -152,6 +155,7 @@ pub struct ObjectMemory {
 struct Object {
     class: OOP,
     layout: ObjectLayout,
+    mark: bool,
     content: Vec<u8>,
 }
 
@@ -210,12 +214,6 @@ impl ObjectMemory {
         for i in 0..4 {
             obj.content[3 - i] = (flt_u32 >> (i * 8)) as u8;
         }
-    }
-
-    pub fn new_float(&mut self, value: f32) -> OOP {
-        let obj = self.instantiate_class(CLASS_FLOAT_PTR, 2, ObjectLayout::Word);
-        self.put_float(obj, value);
-        obj
     }
 
     pub fn get_bytes(&self, oid: OOP) -> &[u8] {
@@ -298,7 +296,7 @@ impl ObjectMemory {
         None
     }
 
-    pub fn instantiate_class(&mut self, klass: OOP, nfields: usize, layout: ObjectLayout) -> OOP {
+    pub fn instantiate_class(&mut self, klass: OOP, nfields: usize, layout: ObjectLayout) -> Option<OOP> {
         let byte_len = nfields * layout.field_size();
 
         // find an unused object
@@ -307,10 +305,11 @@ impl ObjectMemory {
             .iter()
             .enumerate()
             .find(|(index, obj)| obj.is_none())
-            .map(|(index, obj)| index);
+            .map(|(index, obj)| index)?;
 
         let mut new_object = Object {
             class: klass,
+            mark: false,
             layout,
             content: vec![0; byte_len],
         };
@@ -322,17 +321,8 @@ impl ObjectMemory {
             }
         }
 
-        match index {
-            Some(i) => {
-                self.objects[i] = Some(new_object);
-                OOP::pointer(i)
-            }
-            None => {
-                self.objects.push(Some(new_object));
-                self.ref_cnt.push(0);
-                OOP::pointer(self.objects.len() - 1)
-            }
-        }
+        self.objects[index] = Some(new_object);
+        Some(OOP::pointer(index))
     }
 
     pub fn swap_pointers(&mut self, p1: OOP, p2: OOP) {
@@ -367,5 +357,54 @@ impl ObjectMemory {
         while self.ref_cnt.len() < 32767 {
             &self.ref_cnt.push(0);
         }
+    }
+}
+
+
+// GC support
+impl ObjectMemory {
+    pub fn clear_marks(&mut self) {
+        for obj in self.objects.iter_mut().filter_map(|o| o.as_mut()) {
+            obj.mark = false;
+        }
+    }
+
+    pub fn trace(&mut self, mut queue: Vec<OOP>) {
+        while let Some(oop) = queue.pop() {
+            if oop.is_integer() {
+                continue
+            }
+
+            if self.get_obj(oop).mark {
+                continue
+            }
+            self.get_obj_mut(oop).mark = true;
+
+            let npointers = if self.get_class_of(oop) == CLASS_COMPILED_METHOD_PTR { // compiled method
+                MethodHeader::new(self.get_ptr(oop, 0)).oop_count()
+            } else if self.get_obj(oop).layout == ObjectLayout::Pointer {
+                self.get_word_length_of(oop)
+            } else {
+                0
+            };
+            queue.push(self.get_class_of(oop));
+            for i in 0..npointers {
+                let ptr = self.get_ptr(oop, i);
+                if ptr.is_object() {
+                    queue.push(ptr);
+                }
+            }
+        }
+    }
+
+    pub fn drop_unmarked(&mut self) -> usize {
+        let mut freed = 0;
+        for i in 0..self.objects.len() {
+            if !self.objects[i].as_ref().map_or(true, |obj| obj.mark) {
+                self.objects[i] = None;
+                freed += 1;
+            }
+        }
+        freed
     }
 }

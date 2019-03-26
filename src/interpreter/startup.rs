@@ -1,7 +1,9 @@
 use crate::interpreter::{DisplayState, Interpreter, MethodCacheEntry, SUSPENDED_CONTEXT_INDEX};
 use crate::objectmemory::{ObjectMemory, NIL_PTR};
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashSet};
 use std::time::Instant;
+use std::cell::{RefCell, Cell};
+use std::rc::Rc;
 
 impl super::Interpreter {
     pub fn boot(memory: ObjectMemory) -> Self {
@@ -39,6 +41,8 @@ impl super::Interpreter {
             startup_time: Instant::now(),
             timer_sem: None,
             timer_when: 0,
+            held_objects: Rc::new(RefCell::new(Vec::new())),
+            dbg_alloc: Cell::new(false),
         };
 
         interp.memory.pad_table();
@@ -50,6 +54,7 @@ impl super::Interpreter {
         interp.memory.inc_ref(interp.active_context);
         interp.load_ctx();
 
+        interp.gc();
         interp
     }
 }

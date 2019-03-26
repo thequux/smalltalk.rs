@@ -1,21 +1,23 @@
 use crate::interpreter::HeaderFlag::PrimSelf;
-use crate::objectmemory::{
-    ObjectLayout, ObjectMemory, UWord, Word, CANNOT_RETURN_SEL, CHARACTER_TABLE_PTR,
-    CLASS_ARRAY_PTR, CLASS_BLOCK_CONTEXT_PTR, CLASS_CHARACTER_PTR,
-    CLASS_LARGE_POSITIVEINTEGER_PTR, CLASS_MESSAGE_PTR, CLASS_METHOD_CONTEXT_PTR, CLASS_POINT_PTR,
-    CLASS_STRING_PTR, DOES_NOT_UNDERSTAND_SEL, FALSE_PTR, MUST_BE_BOOLEAN_SEL, NIL_PTR, OOP,
-    SCHEDULER_ASSOCIATION_PTR, SPECIAL_SELECTORS_PTR, TRUE_PTR,
-};
-use std::collections::VecDeque;
+use crate::objectmemory::{ObjectLayout, ObjectMemory, UWord, Word, CANNOT_RETURN_SEL, CHARACTER_TABLE_PTR, CLASS_ARRAY_PTR, CLASS_BLOCK_CONTEXT_PTR, CLASS_CHARACTER_PTR, CLASS_LARGE_POSITIVEINTEGER_PTR, CLASS_MESSAGE_PTR, CLASS_METHOD_CONTEXT_PTR, CLASS_POINT_PTR, CLASS_STRING_PTR, DOES_NOT_UNDERSTAND_SEL, FALSE_PTR, MUST_BE_BOOLEAN_SEL, NIL_PTR, OOP, SCHEDULER_ASSOCIATION_PTR, SPECIAL_SELECTORS_PTR, TRUE_PTR, CLASS_FLOAT_PTR};
+use std::collections::{VecDeque, HashSet, HashMap};
 use std::borrow::Cow;
+use std::cell::{RefCell, Cell};
+use std::rc::Rc;
+use crate::interpreter::gc_support::HeldOops;
+use std::fs::File;
+use std::io::BufRead;
 
 mod bitblt;
 mod display;
 mod startup;
 
 const DBG_INSN: bool = false;
-const DBG_CALL: bool = true;
+const DBG_CALL: bool = false;
 const DBG_LOOKUP: bool = false;
+const DBG_MEM: bool = false;
+
+mod gc_support;
 
 pub struct Interpreter {
     memory: ObjectMemory,
@@ -55,6 +57,10 @@ pub struct Interpreter {
     startup_time: ::std::time::Instant,
     timer_sem: Option<OOP>,
     timer_when: u32,
+
+    // GC support
+    held_objects: Rc<RefCell<Vec<Vec<OOP>>>>,
+    dbg_alloc: Cell<bool>,
 }
 
 // Method constants
@@ -65,10 +71,10 @@ const LITERAL_START: usize = 1;
 const VALUE_INDEX: usize = 1;
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
-struct MethodHeader(usize);
+pub struct MethodHeader(usize);
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
-enum HeaderFlag {
+pub enum HeaderFlag {
     // no primitive, 0-4 arguments (in value)
     Normal(usize),
     PrimSelf,
@@ -255,12 +261,15 @@ impl Interpreter {
         self.context_put_ip(self.active_context, (self.ip + 1) as Word);
         self.context_put_sp(
             self.active_context,
-            (self.sp + 1 - CTX_TEMPFRAME_START_INDEX) as Word,
+            (self.sp as Word + 1 - CTX_TEMPFRAME_START_INDEX as Word),
         );
     }
 
     pub fn push(&mut self, oop: OOP) {
         self.sp += 1;
+        if DBG_MEM {
+            println!("STCK {:?}_{} <- {}", self.active_context, self.sp - CTX_TEMPFRAME_START_INDEX, self.obj_name(oop));
+        }
         self.memory.put_ptr(self.active_context, self.sp, oop);
     }
 
@@ -271,7 +280,11 @@ impl Interpreter {
     }
 
     pub fn stack_value(&self, offset: usize) -> OOP {
-        self.memory.get_ptr(self.active_context, self.sp - offset)
+        let value = self.memory.get_ptr(self.active_context, self.sp - offset);
+        if DBG_MEM {
+            println!("STCK {:?}_{} -> {}", self.active_context, self.sp - offset - CTX_TEMPFRAME_START_INDEX, self.obj_name(value));
+        }
+        value
     }
 
     pub fn stack_top(&self) -> OOP {
@@ -280,10 +293,21 @@ impl Interpreter {
 
     pub fn popn(&mut self, count: usize) {
         self.sp -= count;
+        if DBG_MEM {
+            println!("STCK {:?}_sp <- {}", self.active_context,
+                     if self.sp < CTX_TEMPFRAME_START_INDEX {
+                         "invalid".to_owned()
+                     } else {
+                         format!("{}", self.sp - CTX_TEMPFRAME_START_INDEX)
+                     })
+        }
     }
 
     pub fn unpopn(&mut self, count: usize) {
         self.sp += count;
+        if DBG_MEM {
+            println!("STCK {:?}_sp <- {}", self.active_context, self.sp - CTX_TEMPFRAME_START_INDEX)
+        }
     }
 
     pub fn new_active_context(&mut self, ctx: OOP) {
@@ -302,9 +326,21 @@ impl Interpreter {
         self.memory.get_ptr(self.active_context, CTX_SENDER_INDEX)
     }
 
-    pub fn ctx_temp(&self, offset: usize) -> OOP {
+    pub fn ctx_get_temp(&self, offset: usize) -> OOP {
+        let value = self.memory
+            .get_ptr(self.home_context, offset + CTX_TEMPFRAME_START_INDEX);
+        if DBG_MEM {
+            println!("TEMP {:?}_{} -> {}", self.home_context, offset, self.obj_name(value));
+        }
+        value
+    }
+
+    pub fn ctx_put_temp(&mut self, offset: usize, value: OOP) {
+        if DBG_MEM {
+            println!("TEMP {:?}_{} <- {}", self.home_context, offset, self.obj_name(value));
+        }
         self.memory
-            .get_ptr(self.home_context, offset + CTX_TEMPFRAME_START_INDEX)
+            .put_ptr(self.home_context, offset + CTX_TEMPFRAME_START_INDEX, value)
     }
 
     pub fn ctx_literal(&self, offset: usize) -> OOP {
@@ -375,15 +411,16 @@ impl Interpreter {
     }
 
     pub fn create_actual_message(&mut self) {
-        let argument_array = self.memory.instantiate_class(
+        let protector = self.oop_protector();
+        let argument_array = protector.push(self.instantiate_class(
             CLASS_ARRAY_PTR,
             self.argument_count,
             ObjectLayout::Pointer,
-        );
+        ));
 
-        let message =
-            self.memory
-                .instantiate_class(CLASS_MESSAGE_PTR, MESSAGE_SIZE, ObjectLayout::Pointer);
+        let message = protector.push(
+            self.instantiate_class(CLASS_MESSAGE_PTR, MESSAGE_SIZE, ObjectLayout::Pointer),
+        );
 
         self.memory
             .put_ptr(message, MESSAGE_SELECTOR_INDEX, self.message_selector);
@@ -619,7 +656,7 @@ impl Interpreter {
             }
             Insn::PushTemporary(i) => {
                 // push temporary
-                self.push(self.ctx_temp(i));
+                self.push(self.ctx_get_temp(i));
             }
             Insn::PushConst(oop) => self.push(oop),
             Insn::PushLiteralConst(i) => self.push(self.ctx_literal(i)),
@@ -642,14 +679,11 @@ impl Interpreter {
             Insn::StoreReceiverVar(i) => self.memory.put_ptr(self.receiver, i, self.stack_top()),
             Insn::PopTemporary(i) => {
                 let value = self.pop();
-                self.memory
-                    .put_ptr(self.home_context, i + CTX_TEMPFRAME_START_INDEX, value)
+                self.ctx_put_temp(i, value)
             }
-            Insn::StoreTemporary(i) => self.memory.put_ptr(
-                self.home_context,
-                i + CTX_TEMPFRAME_START_INDEX,
-                self.stack_top(),
-            ),
+            Insn::StoreTemporary(i) => {
+                self.ctx_put_temp(i, self.stack_top());
+            },
             Insn::PushReceiver => self.push(self.receiver),
             Insn::PushCtx => self.push(self.active_context),
             Insn::Dup => self.push(self.stack_top()),
@@ -674,6 +708,7 @@ impl Interpreter {
             Insn::MessageReturnRcvr => self.return_value(self.ctx_sender(), self.receiver),
             Insn::SendLiteral(sel, args) => self.send_selector(self.ctx_literal(sel), args),
             Insn::SendLiteralSuper(sel, args) => {
+                self.argument_count = args;
                 self.message_selector = self.ctx_literal(sel);
                 self.send_selector_to_class(self.superclass_of(self.method_class(self.method)));
             }
@@ -694,6 +729,7 @@ impl Interpreter {
     }
 
     fn return_value(&mut self, ctx: OOP, value: OOP) {
+        let protect = self.oop_protector();
         self.interruption_point();
         if ctx == NIL_PTR {
             self.push(self.active_context);
@@ -714,12 +750,15 @@ impl Interpreter {
             println!("[cycle={}] {:depth$} RETN {}", self.cycle, "", self.obj_name(value), depth = self.call_depth);
         }
         self.memory.inc_ref(value);
+        protect.push(value);
         self.return_to_active_context(ctx);
         self.push(value);
         self.memory.dec_ref(value);
     }
 
     fn return_to_active_context(&mut self, ctx: OOP) {
+        let protect = self.oop_protector();
+        protect.push(ctx);
         self.memory.inc_ref(ctx);
         self.nil_context_fields();
         self.memory.dec_ref(ctx);
@@ -744,9 +783,8 @@ impl Interpreter {
 
     fn send_selector_to_class(&mut self, klass: OOP) {
         if DBG_CALL {
-            print!("[cycle={}] {:depth$} SEND ", self.cycle, "", depth = self.call_depth);
-            self.print_methodcall();
-            println!();
+
+            println!("[cycle={}] {:depth$} SEND {}", self.cycle, "", self.print_methodcall(), depth = self.call_depth);
         }
 //        println!("Send selector {:?}", read_st_string(&self.memory, self.message_selector));
         self.find_new_method_in_class(klass);
@@ -782,6 +820,7 @@ impl Interpreter {
     }
 
     fn primitive_response(&mut self) -> Option<()> {
+        let prim = self.primitive_index;
         if self.primitive_index == 0 {
             let header = self.method_header_of(self.new_method);
             match header.flag_value() {
@@ -812,7 +851,7 @@ impl Interpreter {
                     format!(" => {}", self.obj_name(self.stack_top()))
                 };
                 println!("[cycle={}] {:depth$} PRIM {}{}",
-                         self.cycle, "", self.primitive_index, failflag,
+                         self.cycle, "", prim, failflag,
                          depth = self.call_depth);
             }
             res
@@ -825,7 +864,7 @@ impl Interpreter {
         } else {
             12 + CTX_TEMPFRAME_START_INDEX
         };
-        let new_ctx = self.memory.instantiate_class(CLASS_METHOD_CONTEXT_PTR, context_size, ObjectLayout::Pointer);
+        let new_ctx = self.instantiate_class(CLASS_METHOD_CONTEXT_PTR, context_size, ObjectLayout::Pointer);
         self.memory.put_ptr(new_ctx, CTX_SENDER_INDEX, self.active_context);
         let new_method_header = self.method_header_of(self.new_method);
         self.context_put_ip(new_ctx, new_method_header.initial_ip() as Word);
@@ -866,6 +905,100 @@ struct MethodCacheEntry {
 
 // primitives
 impl Interpreter {
+    fn instantiate_class(&mut self, klass: OOP, size: usize, layout: ObjectLayout) -> OOP {
+        if self.dbg_alloc.get() {
+            println!("ALOC {} {:?} for {:?}", size, layout, klass);
+        }
+        let new_val = self.memory.instantiate_class(klass, size, layout)
+            .or_else(|| {
+                self.gc();
+                self.memory.instantiate_class(klass, size, layout)
+            });
+        if let Some(oop) = new_val {
+            return oop;
+        } else {
+            use crate::objectmemory::ImageFormat;
+            self.save_ctx();
+            self.backtrace();
+            crate::objectmemory::text_format::TextFormat::save("crash.dump", &self.memory);
+            panic!("Out of OOPs at context {:?}", self.active_context);
+        }
+    }
+
+    fn read_method_table(&self) -> Option<HashMap<OOP, String>> {
+        let mut method_table: HashMap<OOP, String> = HashMap::new();
+        let mt_file = File::open("../original-image/method_table").ok()?;
+        use std::io::{BufReader, prelude::*};
+        let mut r = BufReader::new(mt_file);
+        for line in r.lines() {
+            let line = line.ok()?;
+            let mut fields = line.split('\t');
+            let raw_oop = u16::from_str_radix(fields.next()?, 16).ok()?;
+            let name = fields.next()?.trim();
+            method_table.insert(OOP(raw_oop as Word), name.to_owned());
+        }
+
+        Some(method_table)
+    }
+
+    fn backtrace(&self) {
+        let method_table = self.read_method_table()
+            .unwrap_or_default();
+
+        let mut ctx = self.active_context;
+
+        while ctx != NIL_PTR {
+            let (block_str, home) = if self.is_block_ctx(ctx) {
+                (" [block]", self.memory.get_ptr(ctx, CTX_HOME_INDEX))
+            } else {
+                ("", ctx)
+            };
+            let method = self.memory.get_ptr(home, CTX_METHOD_INDEX);
+            let ip = self.memory.get_ptr(ctx, CTX_IP_INDEX);
+            println!("\t{} @ {}{}",
+                method_table.get(&method).map(|method| method.to_owned())
+                    .unwrap_or_else(|| format!("{:?}", method)),
+                ip.as_integer(),
+                block_str,
+            );
+            ctx = self.memory.get_ptr(ctx, CTX_SENDER_INDEX);
+        }
+    }
+
+    fn new_float(&mut self, value: f32) -> OOP {
+        let obj = self.instantiate_class(CLASS_FLOAT_PTR, 2, ObjectLayout::Word);
+        self.memory.put_float(obj, value);
+        obj
+    }
+
+    fn oop_protector(&self) -> HeldOops {
+        HeldOops::new(&self)
+    }
+
+    fn gc(&mut self) {
+//        println!("GC!");
+        self.memory.clear_marks();
+        let mut queue = Vec::new();
+        queue.push(self.active_context);
+        // global dictionary
+        queue.push(OOP::pointer(0x12));
+        // protected objects
+        for level in self.held_objects.borrow().iter() {
+            for obj in level.iter() {
+                queue.push(*obj)
+            }
+        }
+//        println!("Protection level: {}", self.held_objects.borrow().len());
+
+        self.memory.trace(queue);
+        #[allow(unused)]
+        let dropped = self.memory.drop_unmarked();
+//        println!("Freed {}", dropped);
+        let oops_left = self.memory.oops_left();
+//        println!("FREE {}", self.memory.oops_left());
+        self.dbg_alloc.set(oops_left < 100);
+    }
+
     fn get_integer(&mut self, oop: OOP, field: usize) -> Option<Word> {
         let iptr = self.memory.get_ptr(oop, field);
         if iptr.is_integer() {
@@ -910,7 +1043,7 @@ impl Interpreter {
             if i < 2 {
                 i += 2;
             }
-            let obj = self.memory.instantiate_class(
+            let obj = self.instantiate_class(
                 CLASS_LARGE_POSITIVEINTEGER_PTR,
                 i,
                 ObjectLayout::Byte,
@@ -1135,6 +1268,9 @@ macro_rules! defprim_compare {
     fn $name(&mut self) -> Option<()> {
         let arg = self.stack_value(0).try_as_integer()?;
         let rcvr = self.stack_value(1).try_as_integer()?;
+        if DBG_CALL {
+            println!(concat!("SEND {} ", stringify!($op), " {}"), rcvr, arg);
+        }
         self.popn(2);
         if rcvr $op arg {
             self.push(TRUE_PTR);
@@ -1183,9 +1319,16 @@ impl Interpreter {
         let rcvr = self.stack_value(1).try_as_integer()?;
         let result = if arg < 0 {
             let arg = -arg as usize;
-            OOP::try_from_integer(rcvr >> arg)?
+            if arg > 15 {
+                OOP::try_from_integer(rcvr >> 15)?
+            } else {
+                OOP::try_from_integer(rcvr >> arg)?
+            }
         } else {
             let arg = arg as usize;
+            if arg > 15 {
+                return None
+            }
             let res = OOP::try_from_integer(rcvr << arg)?;
             if res.as_integer() >> arg == rcvr {
                 res
@@ -1211,8 +1354,7 @@ impl Interpreter {
         rcvr.try_as_integer()?;
 
         let result =
-            self.memory
-                .instantiate_class(CLASS_POINT_PTR, CLASS_POINT_SIZE, ObjectLayout::Pointer);
+            self.instantiate_class(CLASS_POINT_PTR, CLASS_POINT_SIZE, ObjectLayout::Pointer);
         self.memory.put_ptr(result, CLASS_POINT_X, rcvr);
         self.memory.put_ptr(result, CLASS_POINT_Y, arg);
         self.popn(2);
@@ -1242,7 +1384,7 @@ macro_rules! defprim_flt_arith {
     fn $name(&mut self) -> Option<()> {
         let arg = self.get_float(self.stack_value(0))?;
         let rcvr = self.get_float(self.stack_value(1))?;
-        let res = self.memory.new_float(rcvr $op arg);
+        let res = self.new_float(rcvr $op arg);
         self.popn(2);
         self.push(res);
         Some(())
@@ -1253,6 +1395,9 @@ macro_rules! defprim_flt_arith {
 // Floating point
 impl Interpreter {
     fn get_float(&self, oop: OOP) -> Option<f32> {
+        if oop.is_integer() {
+            return Some(oop.as_integer() as f32);
+        }
         return self.memory.get_float(oop);
     }
     fn dispatch_prim_float(&mut self) -> Option<()> {
@@ -1278,7 +1423,7 @@ impl Interpreter {
 
     fn prim_as_float(&mut self) -> Option<()> {
         let int = self.stack_value(0).try_as_integer()?;
-        let float = self.memory.new_float(int as f32);
+        let float = self.new_float(int as f32);
         self.popn(1);
         self.push(float);
         Some(())
@@ -1309,7 +1454,7 @@ impl Interpreter {
 
     fn prim_float_frac(&mut self) -> Option<()> {
         let rcvr = self.get_float(self.stack_top())?;
-        let frac = self.memory.new_float(rcvr.fract());
+        let frac = self.new_float(rcvr.fract());
         self.popn(1);
         self.push(frac);
         Some(())
@@ -1332,7 +1477,7 @@ impl Interpreter {
         } else {
             self.get_float(arg)?.exp2()
         };
-        let result = self.memory.new_float(scale * rcvr);
+        let result = self.new_float(scale * rcvr);
         self.popn(2);
         self.push(result);
         Some(())
@@ -1607,11 +1752,9 @@ impl Interpreter {
             return None;
         }
         let obj = if ispec.is_pointers() {
-            self.memory
-                .instantiate_class(class, size, ObjectLayout::Pointer)
+            self.instantiate_class(class, size, ObjectLayout::Pointer)
         } else if ispec.is_words() {
-            self.memory
-                .instantiate_class(class, size, ObjectLayout::Word)
+            self.instantiate_class(class, size, ObjectLayout::Word)
         } else {
             return None;
         };
@@ -1638,7 +1781,7 @@ impl Interpreter {
         } else {
             ObjectLayout::Byte
         };
-        let obj = self.memory.instantiate_class(class, size, layout);
+        let obj = self.instantiate_class(class, size, layout);
 
         self.popn(2);
         self.push(obj);
@@ -1733,9 +1876,7 @@ impl Interpreter {
 
         let size = (MethodHeader::new(header).literal_count() + 1) * OOP::byte_size()
             + bytecode_count as usize;
-        let method = self
-            .memory
-            .instantiate_class(class, size, ObjectLayout::Byte);
+        let method = self.instantiate_class(class, size, ObjectLayout::Byte);
         self.popn(3);
         self.push(method);
         Some(())
@@ -1771,8 +1912,7 @@ impl Interpreter {
 
         let ctx_size = self.memory.get_word_length_of(method_ctx);
         let new_ctx =
-            self.memory
-                .instantiate_class(CLASS_BLOCK_CONTEXT_PTR, ctx_size, ObjectLayout::Pointer);
+            self.instantiate_class(CLASS_BLOCK_CONTEXT_PTR, ctx_size, ObjectLayout::Pointer);
         let iip = OOP::from(self.ip as i16 + 3);
 
         self.memory.put_ptr(new_ctx, CTX_INITIAL_IP_INDEX, iip);
@@ -1797,7 +1937,7 @@ impl Interpreter {
         self.memory.transfer_fields(
             argcount,
             self.active_context,
-            self.sp - argcount + 1,
+            self.sp + 1 - argcount,
             block_context,
             CTX_TEMPFRAME_START_INDEX,
         );
@@ -1807,7 +1947,7 @@ impl Interpreter {
         self.context_put_sp(block_context, argcount as Word);
         self.memory
             .put_ptr(block_context, CTX_CALLER_INDEX, self.active_context);
-        self.popn(1);
+//        self.popn(1);
         self.new_active_context(block_context);
         Some(())
     }
@@ -1861,6 +2001,7 @@ impl Interpreter {
                 selector_index,
             );
             self.popn(1);
+            self.argument_count -= 1;
             self.execute_new_method();
             return Some(());
         }
@@ -1918,7 +2059,9 @@ const MY_LIST_INDEX: usize = 3;
 // process scheduling
 impl Interpreter {
     fn asynchronous_signal(&mut self, semaphore: OOP) {
-        self.semaphore_list.push(semaphore);
+        if semaphore != NIL_PTR {
+            self.semaphore_list.push(semaphore);
+        }
     }
 
     fn synchronous_signal(&mut self, semaphore: OOP) -> Option<()> {
@@ -2174,8 +2317,7 @@ impl Interpreter {
 
     fn prim_mouse_point(&mut self) -> Option<()> {
         let pt =
-            self.memory
-                .instantiate_class(CLASS_POINT_PTR, CLASS_POINT_SIZE, ObjectLayout::Pointer);
+            self.instantiate_class(CLASS_POINT_PTR, CLASS_POINT_SIZE, ObjectLayout::Pointer);
         self.memory.put_ptr(
             pt,
             CLASS_POINT_X,
@@ -2462,6 +2604,19 @@ impl Interpreter {
                 }
                 result.push(')');
                 return result;
+            },
+            CLASS_POINT_PTR => {
+                let x = self.memory.get_ptr(obj, 0);
+                let y = self.memory.get_ptr(obj, 1);
+                format!("({} @ {})", self.obj_name(x), self.obj_name(y))
+            },
+            CLASS_CHARACTER_PTR => {
+                let chr = self.memory.get_ptr(obj, 0);
+                if chr.is_integer() && chr.as_integer() >= 0 && chr.as_integer() <= 255 {
+                    format!("{:?}", chr.as_integer() as u8 as char)
+                } else {
+                    format!("aCharacter({:?})", chr)
+                }
             }
             klass => {
                 if self.memory.get_class_of(klass) == OOP::pointer(0x1E) {
@@ -2473,14 +2628,16 @@ impl Interpreter {
         }
     }
 
-    pub fn print_methodcall(&self) {
+    pub fn print_methodcall(&self) -> String{
         let rcvr = self.stack_value(self.argument_count);
-        print!("{} {}",
-               self.obj_name(rcvr),
-               read_st_string(&self.memory, self.message_selector));
+        let mut result =
+            format!("{} {}",
+                    self.obj_name(rcvr),
+                    read_st_string(&self.memory, self.message_selector));
         for i in 0..self.argument_count {
             let arg = self.stack_value(self.argument_count - i - 1);
-            print!(" {}", self.obj_name(arg));
+            result += &format!(" {}", self.obj_name(arg));
         }
+        result
     }
 }

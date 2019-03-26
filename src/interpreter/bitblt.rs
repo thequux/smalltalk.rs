@@ -1,4 +1,5 @@
 use crate::objectmemory::{Word, NIL_PTR, OOP};
+use crate::utils::floor_divmod;
 
 static RIGHT_MASKS: [i16; 17] = [
     0x0000, 0x0001, 0x0003, 0x0007, 0x000F, 0x001F, 0x003F, 0x007F, 0x00FF, 0x01FF, 0x03FF, 0x07FF,
@@ -86,7 +87,7 @@ impl super::Interpreter {
         // first in x
         if state.dest_x >= state.clip_x {
             state.sx = state.source_x;
-            state.dx = state.dx;
+            state.dx = state.dest_x;
             state.w = state.width;
         } else {
             state.sx = state.source_x + (state.clip_x - state.dest_x);
@@ -101,7 +102,7 @@ impl super::Interpreter {
         // then in y
         if state.dest_y >= state.clip_y {
             state.sy = state.source_y;
-            state.dy = state.dy;
+            state.dy = state.dest_y;
             state.h = state.height;
         } else {
             state.sy = state.source_y + (state.clip_y - state.dest_y);
@@ -113,26 +114,35 @@ impl super::Interpreter {
             state.h -= (state.dy + state.h) - (state.clip_y + state.clip_height)
         }
 
-        let sf_width = self
-            .memory
-            .get_ptr(state.source_form, FORM_WIDTH_IDX)
-            .try_as_integer()?;
-        let sf_height = self
-            .memory
-            .get_ptr(state.source_form, FORM_HEIGHT_IDX)
-            .try_as_integer()?;
         if state.sx < 0 {
             state.dx -= state.sx;
             state.w += state.sx;
             state.sx = 0;
         }
-        if state.sx + state.w > sf_width {
-            state.w -= state.sx + state.w - sf_width;
-        }
         if state.sy < 0 {
             state.dy -= state.sy;
             state.h += state.sy;
             state.sy = 0;
+        }
+
+        let sf_width;
+        let sf_height;
+        if state.source_form == NIL_PTR {
+            sf_height = 0x7FFF;
+            sf_width = 0x7FFF;
+        } else {
+            sf_width = self
+                .memory
+                .get_ptr(state.source_form, FORM_WIDTH_IDX)
+                .try_as_integer()?;
+            sf_height = self
+                .memory
+                .get_ptr(state.source_form, FORM_HEIGHT_IDX)
+                .try_as_integer()?;
+        }
+
+        if state.sx + state.w > sf_width {
+            state.w -= state.sx + state.w - sf_width;
         }
         if state.sy + state.h > sf_height {
             state.h -= state.sy + state.h - sf_height;
@@ -144,11 +154,12 @@ impl super::Interpreter {
     /// calculate skew and edge masks
     fn compute_masks(&mut self, state: &mut BitBltState) -> Option<()> {
         state.dest_bits = self.memory.get_ptr(state.dest_form, FORM_BITS_IDX);
-        state.dest_raster = (self.get_integer(state.dest_form, FORM_WIDTH_IDX)? - 1) / 16 + 1;
+        state.dest_raster =
+            floor_divmod(self.get_integer(state.dest_form, FORM_WIDTH_IDX)? - 1, 16).0 + 1;
         if state.source_form != NIL_PTR {
             state.source_bits = self.memory.get_ptr(state.source_form, FORM_BITS_IDX);
             state.source_raster =
-                (self.get_integer(state.source_form, FORM_WIDTH_IDX)? - 1) / 16 + 1;
+                floor_divmod(self.get_integer(state.source_form, FORM_WIDTH_IDX)? - 1, 16).0 + 1;
         }
         if state.halftone_form != NIL_PTR {
             state.halftone_bits = self.memory.get_ptr(state.halftone_form, FORM_BITS_IDX);
@@ -175,7 +186,7 @@ impl super::Interpreter {
             state.mask2 = 0;
             state.nwords = 1;
         } else {
-            state.nwords = (state.w - start_bits - 1) / 16 + 2;
+            state.nwords = floor_divmod(state.w - start_bits - 1, 16).0 + 2;
         }
         Some(())
     }
@@ -215,8 +226,8 @@ impl super::Interpreter {
         if state.h_dir < 0 {
             state.preload = !state.preload
         }
-        state.source_index = state.sy * state.source_raster + state.sx / 16;
-        state.dest_index = state.dy * state.dest_raster + state.dx / 16;
+        state.source_index = state.sy * state.source_raster + floor_divmod(state.sx, 16).0;
+        state.dest_index = state.dy * state.dest_raster + floor_divmod(state.dx, 16).0;
         state.source_delta = state.source_raster * state.v_dir
             - state.h_dir * (state.nwords + if state.preload { 1 } else { 0 });
         state.dest_delta = state.dest_raster * state.v_dir - state.nwords * state.h_dir;
@@ -253,7 +264,7 @@ impl super::Interpreter {
                     skew_word = (prev_word & state.skew_mask) | (this_word & !state.skew_mask);
                     prev_word = this_word;
                     // 16-bit rotate
-                    skew_word = skew_word << state.skew | skew_word >> (16 - state.skew);
+                    skew_word = skew_word << state.skew | skew_word >> ((16 - state.skew) & 0xF);
                 }
                 let merge_word = Self::merge(
                     state.combination_rule,

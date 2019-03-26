@@ -1,5 +1,5 @@
-pub mod interpreter;
-pub mod objectmemory;
+use rsvm::interpreter;
+use rsvm::objectmemory;
 
 fn main() -> std::io::Result<()> {
     use objectmemory::ImageFormat;

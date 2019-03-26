@@ -77,6 +77,7 @@ impl super::ImageFormat for DistFormat {
 
                 let obj = super::Object {
                     class: class_oop,
+                    mark: false,
                     layout: ObjectLayout::Byte,
                     content,
                 };
@@ -95,9 +96,9 @@ impl super::ImageFormat for DistFormat {
 
             let ispec: InstanceSpecification = memory.get_ptr(class, crate::interpreter::INSTANCE_SPECIFICATION_INDEX).into();
             memory.objects[i].as_mut().unwrap().layout = if ispec.is_pointers() {
-                ObjectLayout::Word
-            } else if ispec.is_words() {
                 ObjectLayout::Pointer
+            } else if ispec.is_words() {
+                ObjectLayout::Word
             } else {
                 ObjectLayout::Byte
             }

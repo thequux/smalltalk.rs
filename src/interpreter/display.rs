@@ -61,7 +61,7 @@ pub fn poll_display(interp: &mut Interpreter) {
     // render display
     let frame_no = interp.startup_time.elapsed().as_millis() * 6 / 1000;
     if interp.display_impl.last_frame < frame_no {
-        println!("Triggered frame");
+//        println!("Triggered frame");
         interp.display_impl.last_frame = frame_no;
         if render_display(interp).is_none() {
             let canvas = &mut interp.display_impl.canvas;
@@ -89,13 +89,16 @@ fn render_display(interp: &mut Interpreter) -> Option<()> {
 
     let mut raw_owned = display_raw.to_vec();
 
-    println!("DISP size: {}x{}", display_w, display_h);
+//    println!("DISP size: {}x{}", display_w, display_h);
 
+    if false {
+        return Some(())
+    }
     let image = sdl2::surface::Surface::from_data(
         &mut raw_owned[..],
         display_w as u32,
         display_h as u32,
-        (display_w as u32 + 15) / 2,
+        (display_w as u32 + 15) / 16 * 2,
         PixelFormatEnum::Index1MSB,
     )
     .ok()?;
