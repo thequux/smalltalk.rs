@@ -36,6 +36,8 @@ impl super::Interpreter {
                 input_semaphore: NIL_PTR,
                 input_queue: VecDeque::new(),
                 sample_interval_ms: 0,
+                mouse_delay_start: None,
+                mouse_queued: false,
             },
             display_impl: display,
             startup_time: Instant::now(),

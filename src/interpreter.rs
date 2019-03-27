@@ -7,6 +7,8 @@ use std::rc::Rc;
 use crate::interpreter::gc_support::HeldOops;
 use std::fs::File;
 use std::io::BufRead;
+use crate::utils::floor_divmod;
+use std::time::Instant;
 
 mod bitblt;
 mod display;
@@ -775,7 +777,6 @@ impl Interpreter {
     }
 
     fn send_selector(&mut self, selector: OOP, arg_count: usize) {
-        self.interruption_point();
         self.message_selector = selector;
         self.argument_count = arg_count;
         let new_receiver = self.stack_value(arg_count);
@@ -815,6 +816,7 @@ impl Interpreter {
 //        println!("Executing method {:?}", self.new_method);
         if self.primitive_response().is_none() {
             self.activate_new_method();
+            self.interruption_point();
         } else {
 //            println!("Handled primitively");
         }
@@ -861,9 +863,9 @@ impl Interpreter {
 
     fn activate_new_method(&mut self) {
         let context_size = if self.method_header_of(self.new_method).large_context_flag() {
-            32 + CTX_TEMPFRAME_START_INDEX
+            64 + CTX_TEMPFRAME_START_INDEX
         } else {
-            12 + CTX_TEMPFRAME_START_INDEX
+            36 + CTX_TEMPFRAME_START_INDEX
         };
         let new_ctx = self.instantiate_class(CLASS_METHOD_CONTEXT_PTR, context_size, ObjectLayout::Pointer);
         self.memory.put_ptr(new_ctx, CTX_SENDER_INDEX, self.active_context);
@@ -1170,7 +1172,7 @@ impl Interpreter {
     fn prim_add(&mut self) -> Option<()> {
         let arg = self.stack_value(0).try_as_integer()?;
         let rcvr = self.stack_value(1).try_as_integer()?;
-        let result = OOP::try_from_integer(rcvr + arg)?;
+        let result = OOP::try_from_integer(rcvr.checked_add(arg)?)?;
         self.popn(2);
         self.push(result);
         Some(())
@@ -1179,7 +1181,7 @@ impl Interpreter {
     fn prim_sub(&mut self) -> Option<()> {
         let arg = self.stack_value(0).try_as_integer()?;
         let rcvr = self.stack_value(1).try_as_integer()?;
-        let result = OOP::try_from_integer(rcvr - arg)?;
+        let result = OOP::try_from_integer(rcvr.checked_sub(arg)?)?;
         self.popn(2);
         self.push(result);
         Some(())
@@ -1188,7 +1190,7 @@ impl Interpreter {
     fn prim_mul(&mut self) -> Option<()> {
         let arg = self.stack_value(0).try_as_integer()?;
         let rcvr = self.stack_value(1).try_as_integer()?;
-        let result = OOP::try_from_integer(rcvr * arg)?;
+        let result = OOP::try_from_integer(rcvr.checked_mul(arg)?)?;
         self.popn(2);
         self.push(result);
         Some(())
@@ -1212,18 +1214,12 @@ impl Interpreter {
         // round towards -inf; 0 <= mod < arg
         let mut arg = self.stack_value(0).try_as_integer()?;
         let mut rcvr = self.stack_value(1).try_as_integer()?;
+
         if arg == 0 {
-            return None;
+            return None
         }
-        if arg < 0 {
-            arg = -arg;
-            rcvr = -rcvr;
-        };
-        let mut result = rcvr % arg;
-        if result < 0 {
-            result += arg
-        }
-        let result = OOP::try_from_integer(result)?;
+        let (_div, rem) = floor_divmod(rcvr, arg);
+        let result = OOP::try_from_integer(rem)?;
         self.popn(2);
         self.push(result);
         Some(())
@@ -1236,15 +1232,8 @@ impl Interpreter {
         if arg == 0 {
             return None;
         }
-        if arg < 0 {
-            arg = -arg;
-            rcvr = -rcvr;
-        };
-        let mut result = rcvr / arg;
-        if rcvr % arg != 0 && rcvr < 0 {
-            result -= 1;
-        }
-        let result = OOP::try_from_integer(result)?;
+        let (div, _rem) = floor_divmod(rcvr, arg);
+        let result = OOP::try_from_integer(div)?;
         self.popn(2);
         self.push(result);
         Some(())
@@ -1320,7 +1309,9 @@ impl Interpreter {
         let rcvr = self.stack_value(1).try_as_integer()?;
         let result = if arg < 0 {
             let arg = -arg as usize;
+            // TODO: Word size dependent
             if arg > 15 {
+                // This will shift in the sign bit
                 OOP::try_from_integer(rcvr >> 15)?
             } else {
                 OOP::try_from_integer(rcvr >> arg)?
@@ -1869,15 +1860,27 @@ impl Interpreter {
 
     fn prim_new_method(&mut self) -> Option<()> {
         let header = self.stack_value(0);
+        if !header.is_integer() {
+            return None;
+        }
+        let parsed_header = MethodHeader::new(header);
+        if parsed_header.flag_value() == HeaderFlag::HeaderExt && parsed_header.literal_count() < 2 {
+            return None
+        }
         let bytecode_count = self.stack_value(1).try_as_integer()?;
         let class = self.stack_value(2);
         if bytecode_count < 0 {
             return None;
         }
 
-        let size = (MethodHeader::new(header).literal_count() + 1) * OOP::byte_size()
+        let size = (parsed_header.literal_count() + 1) * OOP::byte_size()
             + bytecode_count as usize;
         let method = self.instantiate_class(class, size, ObjectLayout::Byte);
+        self.memory.put_ptr(method, 0, header);
+        if parsed_header.flag_value() == HeaderFlag::HeaderExt {
+            // make sure that the header is valid, if existing
+            self.memory.put_ptr(method, parsed_header.literal_count() + LITERAL_START - 2, OOP::from(0));
+        }
         self.popn(3);
         self.push(method);
         Some(())
@@ -2217,7 +2220,7 @@ impl Interpreter {
         let rcvr = self.stack_top();
         let excess_signals = self.get_integer(rcvr, EXCESS_SIGNALS_INDEX)?;
         if excess_signals > 0 {
-            println!("Process {:?} waits on {:?}", self.active_process(), rcvr);
+//            println!("Process {:?} waits on {:?}", self.active_process(), rcvr);
             self.put_integer(rcvr, EXCESS_SIGNALS_INDEX, excess_signals - 1)
         } else {
             self.add_last_link_to_list(rcvr, self.active_process());
@@ -2256,6 +2259,9 @@ struct DisplayState {
     cursor_location: Option<(isize, isize)>,
     mouse_location: (isize, isize),
 
+    mouse_delay_start: Option<Instant>,
+    mouse_queued: bool,
+
     input_semaphore: OOP,
     input_queue: VecDeque<UWord>,
 
@@ -2271,7 +2277,8 @@ enum StEvent {
 
 // IO primitives
 impl Interpreter {
-    fn push_event(&mut self, event: StEvent) {
+
+    fn push_event_time(&mut self) {
         // push time code
         let elapsed = self.startup_time.elapsed().as_millis();
         let dt = (elapsed - self.display.last_event) as u32;
@@ -2286,14 +2293,35 @@ impl Interpreter {
             self.push_event_word((abstime >> 16) as UWord);
             self.push_event_word(abstime as UWord);
         }
+    }
+
+    fn send_mouse_update(&mut self, new_event: bool) {
+        self.display.mouse_queued |= new_event;
+        if let Some(elapsed) = self.display.mouse_delay_start.as_ref().map(Instant::elapsed) {
+            if elapsed.as_millis() as usize > self.display.sample_interval_ms {
+                self.display.mouse_delay_start = None;
+            }
+        }
+
+        if self.display.mouse_delay_start.is_none() && self.display.mouse_queued {
+            let (x,y) = self.display.mouse_location;
+            self.push_event_time();
+            self.push_event_word((x as UWord & 0xFFF) | 0x1000);
+            self.push_event_word((y as UWord & 0xFFF) | 0x2000);
+            self.display.mouse_queued = false;
+            self.display.mouse_delay_start = Some(Instant::now());
+        }
+    }
+
+    fn push_event(&mut self, event: StEvent) {
 
         match event {
             StEvent::PointerPos(x, y) => {
                 self.display.mouse_location = (x as isize, y as isize);
-                self.push_event_word((x & 0xFFF) | 0x1000);
-                self.push_event_word((y & 0xFFF) | 0x2000);
+                self.send_mouse_update(false);
             }
             StEvent::Bistate(dev, down) => {
+                self.push_event_time();
                 let tag = if down { 0x3000 } else { 0x4000 };
                 self.push_event_word(dev | tag);
             }
@@ -2301,7 +2329,7 @@ impl Interpreter {
     }
 
     fn push_event_word(&mut self, word: UWord) {
-        println!("Sent word {:04x}", word);
+//        println!("Sent word {:04x}", word);
         self.display.input_queue.push_back(word);
         self.synchronous_signal(self.display.input_semaphore);
     }
@@ -2392,9 +2420,9 @@ impl Interpreter {
 
     fn prim_input_word(&mut self) -> Option<()> {
         let word = self.display.input_queue.pop_front()?;
-        println!("Input word {:04x}", word);
+//        println!("Input word {:04x}", word);
         let item = if word >= 0x4000 {
-            println!("Unexpectedly long word");
+//            println!("Unexpectedly long word");
             self.long_integer_for(word as usize)
         } else {
             OOP::try_from_integer(word as Word)?
@@ -2469,6 +2497,7 @@ impl Interpreter {
 
     fn prim_be_display(&mut self) -> Option<()> {
         self.display.display = self.stack_top();
+        self::display::notice_new_display(self);
         Some(())
     }
 
@@ -2612,7 +2641,7 @@ impl Interpreter {
         } else if obj == NIL_PTR {
             return "nil".to_string()
         }
-        match self.memory.get_class_of(obj) {
+        let name = match self.memory.get_class_of(obj) {
             OOP(0x38) => format!("#{}", read_st_string(&self.memory, obj)),
             CLASS_STRING_PTR => format!("{:?}", read_st_string(&self.memory, obj)),
             CLASS_LARGE_POSITIVEINTEGER_PTR => {
@@ -2622,7 +2651,7 @@ impl Interpreter {
                     result += &format!("{:02x}", digit);
                 }
                 result.push(')');
-                return result;
+                result
             },
             CLASS_POINT_PTR => {
                 let x = self.memory.get_ptr(obj, 0);
@@ -2644,19 +2673,20 @@ impl Interpreter {
                     format!("a{}", self.class_name(klass))
                 }
             }
-        }
+        };
+
+        format!("{}({:?})", name, obj)
     }
 
     pub fn print_methodcall(&self) -> String{
         let rcvr = self.stack_value(self.argument_count);
         let mut result =
-            format!("{}({:?}) {}",
+            format!("{} {}",
                     self.obj_name(rcvr),
-                    rcvr,
                     read_st_string(&self.memory, self.message_selector));
         for i in 0..self.argument_count {
             let arg = self.stack_value(self.argument_count - i - 1);
-            result += &format!(" {}({:?})", self.obj_name(arg), arg);
+            result += &format!(" {}", self.obj_name(arg));
         }
         result
     }

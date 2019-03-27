@@ -4,6 +4,7 @@ use sdl2::pixels::{Color, PixelFormatEnum};
 use crate::objectmemory::{UWord, NIL_PTR};
 use sdl2::rect::Rect;
 use sdl2::mouse::MouseButton;
+use sdl2::render::BlendMode;
 
 pub struct StDisplay {
     last_frame: u128,
@@ -22,6 +23,7 @@ impl StDisplay {
             .position_centered()
             .build()
             .unwrap();
+
         let mut canvas = window.into_canvas().build().unwrap();
         canvas.set_draw_color(Color::RGB(0x00, 0x88, 0xFF));
         canvas.clear();
@@ -36,6 +38,22 @@ impl StDisplay {
         }
     }
 }
+
+pub fn notice_new_display(interp: &mut Interpreter) -> Option<()> {
+    use super::bitblt::{FORM_BITS_IDX, FORM_HEIGHT_IDX, FORM_WIDTH_IDX};
+    let display_form = interp.display.display;
+    let display_w = interp
+        .memory
+        .get_ptr(display_form, FORM_WIDTH_IDX)
+        .try_as_integer()?;
+    let display_h = interp
+        .memory
+        .get_ptr(display_form, FORM_HEIGHT_IDX)
+        .try_as_integer()?;
+    interp.display_impl.canvas.window_mut().set_size(display_w as u32 * DISPLAY_SCALE, display_h as u32 * DISPLAY_SCALE).unwrap();
+    Some(())
+}
+
 
 fn mouse_to_st(btn: MouseButton) -> Option<UWord> {
     match btn {
@@ -177,7 +195,7 @@ pub fn poll_display(interp: &mut Interpreter) {
                 }
             }
             Event::MouseMotion { x, y, .. } => {
-                interp.push_event(StEvent::PointerPos(x as UWord, y as UWord));
+                interp.push_event(StEvent::PointerPos((x / DISPLAY_SCALE as i32) as UWord, (y / DISPLAY_SCALE as i32) as UWord));
             }
             Event::MouseButtonDown { mouse_btn, .. } => {
                 if let Some(btn) = mouse_to_st(mouse_btn) {
@@ -217,14 +235,18 @@ pub fn poll_display(interp: &mut Interpreter) {
     }
 }
 
-const DISPLAY_SCALE: usize = 2;
+const DISPLAY_SCALE: u32 = 2;
 
 fn render_display(interp: &mut Interpreter) -> Option<()> {
     use super::bitblt::{FORM_BITS_IDX, FORM_HEIGHT_IDX, FORM_WIDTH_IDX};
+
+
     let display_form = interp.display.display;
     if display_form == NIL_PTR {
         return None;
     }
+
+    let mut canvas = &mut interp.display_impl.canvas;
     let display_bits = interp.memory.get_ptr(display_form, FORM_BITS_IDX);
     let display_raw = interp.memory.get_bytes(display_bits);
     let display_w = interp
@@ -252,9 +274,9 @@ fn render_display(interp: &mut Interpreter) -> Option<()> {
     )
     .ok()?;
 
-    let texc = interp.display_impl.canvas.texture_creator();
+    let texc = canvas.texture_creator();
     let tex = texc.create_texture_from_surface(image).ok()?;
-    interp.display_impl.canvas.copy(&tex, None, None).ok()?;
+    canvas.copy(&tex, None, None).ok()?;
     
     if interp.display.cursor != NIL_PTR {
         let cursor_form = interp.display.cursor;
@@ -283,11 +305,18 @@ fn render_display(interp: &mut Interpreter) -> Option<()> {
             .ok()?;
         let tex = texc.create_texture_from_surface(image).ok()?;
         let cursor_pos = interp.display.cursor_location.unwrap_or(interp.display.mouse_location);
-        let dest_rect = Rect::new(cursor_pos.0 as i32, cursor_pos.1 as i32, cursor_w as u32, cursor_h as u32);
-        interp.display_impl.canvas.copy(&tex, None, dest_rect).ok()?;
+        let dest_rect = Rect::new(
+            cursor_pos.0 as i32 * DISPLAY_SCALE as i32,
+            cursor_pos.1 as i32 * DISPLAY_SCALE as i32,
+            cursor_w as u32 * DISPLAY_SCALE,
+            cursor_h as u32 * DISPLAY_SCALE,
+        );
+        canvas.set_blend_mode(BlendMode::Add);
+        canvas.set_draw_color(Color::RGB(0,128,255));
+        canvas.copy(&tex, None, dest_rect).ok()?;
 
     }
 
-    interp.display_impl.canvas.present();
+    canvas.present();
     Some(())
 }
