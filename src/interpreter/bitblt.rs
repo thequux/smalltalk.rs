@@ -14,43 +14,43 @@ pub struct BitBltState {
     source_form: OOP,
     halftone_form: OOP,
     combination_rule: Word,
-    dest_x: Word,
-    dest_y: Word,
-    width: Word,
-    height: Word,
+    dest_x: isize,
+    dest_y: isize,
+    width: isize,
+    height: isize,
 
-    clip_x: Word,
-    clip_y: Word,
-    clip_width: Word,
-    clip_height: Word,
+    clip_x: isize,
+    clip_y: isize,
+    clip_width: isize,
+    clip_height: isize,
 
-    source_x: Word,
-    source_y: Word,
-    source_wordcount: Word,
+    source_x: isize,
+    source_y: isize,
+    source_wordcount: isize,
 
     source_bits: OOP,
-    source_raster: Word,
+    source_raster: isize,
     dest_bits: OOP,
-    dest_raster: Word,
+    dest_raster: isize,
     halftone_bits: OOP,
-    skew: Word,
+    skew: isize,
     skew_mask: Word,
     mask1: Word,
     mask2: Word,
     preload: bool,
-    nwords: Word,
-    h_dir: Word,
-    v_dir: Word,
-    source_index: Word,
-    source_delta: Word,
-    dest_index: Word,
-    dest_delta: Word,
-    sx: Word,
-    sy: Word,
-    dx: Word,
-    dy: Word,
-    w: Word,
-    h: Word,
+    nwords: isize,
+    h_dir: isize,
+    v_dir: isize,
+    source_index: isize,
+    source_delta: isize,
+    dest_index: isize,
+    dest_delta: isize,
+    sx: isize,
+    sy: isize,
+    dx: isize,
+    dy: isize,
+    w: isize,
+    h: isize,
 }
 
 const BB_DEST_FORM_IDX: usize = 0;
@@ -129,17 +129,17 @@ impl super::Interpreter {
         let sf_width;
         let sf_height;
         if state.source_form == NIL_PTR {
-            sf_height = 0x7FFF;
-            sf_width = 0x7FFF;
+            sf_height = std::isize::MAX;
+            sf_width = std::isize::MAX;
         } else {
             sf_width = self
                 .memory
                 .get_ptr(state.source_form, FORM_WIDTH_IDX)
-                .try_as_integer()?;
+                .try_as_integer()? as isize;
             sf_height = self
                 .memory
                 .get_ptr(state.source_form, FORM_HEIGHT_IDX)
-                .try_as_integer()?;
+                .try_as_integer()? as isize;
         }
 
         if state.sx + state.w > sf_width {
@@ -156,12 +156,12 @@ impl super::Interpreter {
     fn compute_masks(&mut self, state: &mut BitBltState) -> Option<()> {
         state.dest_bits = self.memory.get_ptr(state.dest_form, FORM_BITS_IDX);
         state.dest_raster =
-            floor_divmod(self.get_integer(state.dest_form, FORM_WIDTH_IDX)? - 1, 16).0 + 1;
+            floor_divmod(self.get_integer(state.dest_form, FORM_WIDTH_IDX)? as isize - 1, 16).0 + 1;
         if state.source_form != NIL_PTR {
             state.source_bits = self.memory.get_ptr(state.source_form, FORM_BITS_IDX);
-            state.source_wordcount = self.memory.get_word_length_of(state.source_bits) as Word;
+            state.source_wordcount = self.memory.get_word_length_of(state.source_bits) as isize;
             state.source_raster =
-                floor_divmod(self.get_integer(state.source_form, FORM_WIDTH_IDX)? - 1, 16).0 + 1;
+                floor_divmod(self.get_integer(state.source_form, FORM_WIDTH_IDX)? as isize - 1, 16).0 + 1;
         }
         if state.halftone_form != NIL_PTR {
             state.halftone_bits = self.memory.get_ptr(state.halftone_form, FORM_BITS_IDX);
@@ -334,22 +334,22 @@ impl super::Interpreter {
             .memory
             .get_ptr(oop, BB_COMBINATION_RULE_IDX)
             .try_as_integer()?;
-        state.dest_x = self.memory.get_ptr(oop, BB_DEST_X_IDX).try_as_integer()?;
-        state.dest_y = self.memory.get_ptr(oop, BB_DEST_Y_IDX).try_as_integer()?;
-        state.width = self.memory.get_ptr(oop, BB_WIDTH_IDX).try_as_integer()?;
-        state.height = self.memory.get_ptr(oop, BB_HEIGHT_IDX).try_as_integer()?;
-        state.source_x = self.memory.get_ptr(oop, BB_SOURCE_X_IDX).try_as_integer()?;
-        state.source_y = self.memory.get_ptr(oop, BB_SOURCE_Y_IDX).try_as_integer()?;
-        state.clip_x = self.memory.get_ptr(oop, BB_CLIP_X_IDX).try_as_integer()?;
-        state.clip_y = self.memory.get_ptr(oop, BB_CLIP_Y_IDX).try_as_integer()?;
+        state.dest_x = self.memory.get_ptr(oop, BB_DEST_X_IDX).try_as_integer()? as isize;
+        state.dest_y = self.memory.get_ptr(oop, BB_DEST_Y_IDX).try_as_integer()? as isize;
+        state.width = self.memory.get_ptr(oop, BB_WIDTH_IDX).try_as_integer()? as isize;
+        state.height = self.memory.get_ptr(oop, BB_HEIGHT_IDX).try_as_integer()? as isize;
+        state.source_x = self.memory.get_ptr(oop, BB_SOURCE_X_IDX).try_as_integer()? as isize;
+        state.source_y = self.memory.get_ptr(oop, BB_SOURCE_Y_IDX).try_as_integer()? as isize;
+        state.clip_x = self.memory.get_ptr(oop, BB_CLIP_X_IDX).try_as_integer()? as isize;
+        state.clip_y = self.memory.get_ptr(oop, BB_CLIP_Y_IDX).try_as_integer()? as isize;
         state.clip_width = self
             .memory
             .get_ptr(oop, BB_CLIP_WIDTH_IDX)
-            .try_as_integer()?;
+            .try_as_integer()? as isize;
         state.clip_height = self
             .memory
             .get_ptr(oop, BB_CLIP_HEIGHT_IDX)
-            .try_as_integer()?;
+            .try_as_integer()? as isize;
         Some(())
     }
 

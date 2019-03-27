@@ -15,7 +15,7 @@ mod display;
 mod startup;
 
 const DBG_INSN: bool = false;
-const DBG_CALL: bool = false;
+const DBG_CALL: bool = true;
 const DBG_LOOKUP: bool = false;
 const DBG_MEM: bool = false;
 
@@ -284,7 +284,7 @@ impl Interpreter {
     pub fn stack_value(&self, offset: usize) -> OOP {
         let value = self.memory.get_ptr(self.active_context, self.sp - offset);
         if DBG_MEM {
-            println!("STCK {:?}_{} -> {}", self.active_context, self.sp - offset - CTX_TEMPFRAME_START_INDEX, self.obj_name(value));
+            println!("STCK {:?}_{} -> {}", self.active_context, self.sp as isize - offset as isize - CTX_TEMPFRAME_START_INDEX as isize, self.obj_name(value));
         }
         value
     }
@@ -298,7 +298,7 @@ impl Interpreter {
         if DBG_MEM {
             println!("STCK {:?}_sp <- {}", self.active_context,
                      if self.sp < CTX_TEMPFRAME_START_INDEX {
-                         "invalid".to_owned()
+                         format!("\x1b[1;32m{}\x1b[0m", self.sp as isize - CTX_TEMPFRAME_START_INDEX as isize)
                      } else {
                          format!("{}", self.sp - CTX_TEMPFRAME_START_INDEX)
                      })
@@ -846,10 +846,13 @@ impl Interpreter {
                 _ => None,
             }
         } else {
+            let old_context = self.active_context;
             let res = self.dispatch_prim();
             if DBG_CALL {
                 let failflag = if res.is_none() {
                     " FAIL".to_string()
+                } else if self.active_context != old_context {
+                    " (new context)".to_string()
                 } else {
                     format!(" => {}", self.obj_name(self.stack_top()))
                 };
@@ -1666,7 +1669,7 @@ impl Interpreter {
         }
 
         self.put_integer(stream, STREAM_INDEX_INDEX, index)?;
-        self.popn(1);
+        self.popn(2);
         self.push(value);
         Some(())
     }
@@ -2035,7 +2038,7 @@ impl Interpreter {
             return Some(());
         } else {
             // BUG: really? I think this should be popn
-            self.unpopn(self.argument_count);
+            self.popn(self.argument_count);
             self.push(self.message_selector);
             self.push(argument_array);
             self.argument_count = 2;
@@ -2448,7 +2451,7 @@ impl Interpreter {
         for i in 0..4 {
             self.vm_atput(
                 result_array,
-                3 - i,
+                4 - i,
                 OOP::try_from_integer(((st_time >> (8 * i)) & 0xFF) as Word)?,
             );
         }
@@ -2464,7 +2467,7 @@ impl Interpreter {
         for i in 0..4 {
             self.vm_atput(
                 result_array,
-                3 - i,
+                4 - i,
                 OOP::try_from_integer(((unix_time >> (8 * i)) & 0xFF) as Word)?,
             );
         }
