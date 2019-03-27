@@ -15,7 +15,7 @@ mod display;
 mod startup;
 
 const DBG_INSN: bool = false;
-const DBG_CALL: bool = true;
+const DBG_CALL: bool = false;
 const DBG_LOOKUP: bool = false;
 const DBG_MEM: bool = false;
 
@@ -2483,13 +2483,13 @@ impl Interpreter {
         let mut when = 0;
         println!("Scheduling timer...");
         for i in 0..self.memory.get_byte_length_of(when_array) {
-            let byte = self.vm_at(when_array, i).try_as_integer()? as u8 as u32;
+            let byte = self.memory.get_byte(when_array, i) as u32;
             when |= byte << (i * 8);
         }
         println!("Scheduled timer for {}", when);
         self.timer_when = when;
         self.timer_sem = Some(semaphore);
-        self.popn(2);
+        self.popn(1);
         Some(())
     }
 

@@ -14,15 +14,12 @@ pub struct BitBltState {
     source_form: OOP,
     halftone_form: OOP,
     combination_rule: Word,
+    clip: Rectangle,
     dest_x: isize,
     dest_y: isize,
     width: isize,
     height: isize,
 
-    clip_x: isize,
-    clip_y: isize,
-    clip_width: isize,
-    clip_height: isize,
 
     source_x: isize,
     source_y: isize,
@@ -52,6 +49,42 @@ pub struct BitBltState {
     w: isize,
     h: isize,
 }
+
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug, Default)]
+/// A generic rectangle
+/// Widths and heights less than 0 indicate degenerate rectangles
+struct Rectangle {
+    x: isize,
+    y: isize,
+    w: isize,
+    h: isize,
+}
+
+impl Rectangle {
+    fn intersect(mut self, mut other: Rectangle) -> Rectangle {
+        use std::cmp::{min, max};
+        let xmin = max(self.x, other.x);
+        let xmax = min(self.xmax(), other.xmax());
+        let ymin = max(self.y, other.y);
+        let ymax = min(self.ymax(), other.ymax());
+
+        Rectangle {
+            x: xmin,
+            w: xmax-xmin,
+            y: ymin,
+            h: ymax-ymin,
+        }
+    }
+
+    fn ymax(&self) -> isize {
+        self.y + self.h
+    }
+
+    fn xmax(&self) -> isize {
+        self.x + self.w
+    }
+}
+
 
 const BB_DEST_FORM_IDX: usize = 0;
 const BB_SOURCE_FORM_IDX: usize = 1;
@@ -85,34 +118,44 @@ pub const FORM_OFFSET_IDX: usize = 3;
 impl super::Interpreter {
     /// Clip and adjust source origin and extent appropriately
     fn clip_range(&mut self, state: &mut BitBltState) -> Option<()> {
+
+        // tweak heights to dest form
+        let destform_rect = Rectangle {
+            x: 0,
+            y: 0,
+            h: self.memory.get_ptr(state.dest_form, FORM_HEIGHT_IDX).try_as_integer()? as isize,
+            w: self.memory.get_ptr(state.dest_form, FORM_WIDTH_IDX).try_as_integer()? as isize,
+        };
+        state.clip = state.clip.intersect(destform_rect);
+
         // first in x
-        if state.dest_x >= state.clip_x {
+        if state.dest_x >= state.clip.x {
             state.sx = state.source_x;
             state.dx = state.dest_x;
             state.w = state.width;
         } else {
-            state.sx = state.source_x + (state.clip_x - state.dest_x);
-            state.dx = state.clip_x;
-            state.w = state.width - (state.clip_x - state.dest_x);
+            state.sx = state.source_x + (state.clip.x - state.dest_x);
+            state.dx = state.clip.x;
+            state.w = state.width - (state.clip.x - state.dest_x);
         }
 
-        if state.dx + state.w > state.clip_x + state.clip_width {
-            state.w -= (state.dx + state.w) - (state.clip_x + state.clip_width)
+        if state.dx + state.w > state.clip.x + state.clip.w {
+            state.w -= (state.dx + state.w) - (state.clip.x + state.clip.w)
         }
 
         // then in y
-        if state.dest_y >= state.clip_y {
+        if state.dest_y >= state.clip.y {
             state.sy = state.source_y;
             state.dy = state.dest_y;
             state.h = state.height;
         } else {
-            state.sy = state.source_y + (state.clip_y - state.dest_y);
-            state.dy = state.clip_y;
-            state.h = state.height - (state.clip_y - state.dest_y);
+            state.sy = state.source_y + (state.clip.y - state.dest_y);
+            state.dy = state.clip.y;
+            state.h = state.height - (state.clip.y - state.dest_y);
         }
 
-        if state.dy + state.h > state.clip_y + state.clip_height {
-            state.h -= (state.dy + state.h) - (state.clip_y + state.clip_height)
+        if state.dy + state.h > state.clip.y + state.clip.h {
+            state.h -= (state.dy + state.h) - (state.clip.y + state.clip.h)
         }
 
         if state.sx < 0 {
@@ -340,16 +383,18 @@ impl super::Interpreter {
         state.height = self.memory.get_ptr(oop, BB_HEIGHT_IDX).try_as_integer()? as isize;
         state.source_x = self.memory.get_ptr(oop, BB_SOURCE_X_IDX).try_as_integer()? as isize;
         state.source_y = self.memory.get_ptr(oop, BB_SOURCE_Y_IDX).try_as_integer()? as isize;
-        state.clip_x = self.memory.get_ptr(oop, BB_CLIP_X_IDX).try_as_integer()? as isize;
-        state.clip_y = self.memory.get_ptr(oop, BB_CLIP_Y_IDX).try_as_integer()? as isize;
-        state.clip_width = self
-            .memory
-            .get_ptr(oop, BB_CLIP_WIDTH_IDX)
-            .try_as_integer()? as isize;
-        state.clip_height = self
-            .memory
-            .get_ptr(oop, BB_CLIP_HEIGHT_IDX)
-            .try_as_integer()? as isize;
+        state.clip = Rectangle {
+            x: self.memory.get_ptr(oop, BB_CLIP_X_IDX).try_as_integer()? as isize,
+            y: self.memory.get_ptr(oop, BB_CLIP_Y_IDX).try_as_integer()? as isize,
+            w: self
+                .memory
+                .get_ptr(oop, BB_CLIP_WIDTH_IDX)
+                .try_as_integer()? as isize,
+            h: self
+                .memory
+                .get_ptr(oop, BB_CLIP_HEIGHT_IDX)
+                .try_as_integer()? as isize,
+        };
         Some(())
     }
 

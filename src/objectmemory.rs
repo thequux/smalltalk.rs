@@ -46,7 +46,7 @@ impl ObjectLayout {
 impl Debug for OOP {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
         if self.is_object() {
-            write!(f, "@0x{:X}", self.0 as u16)
+            write!(f, "@0x{:X}", self.as_oid())
         } else {
             write!(f, "$0x{:X}", self.as_integer())
         }
