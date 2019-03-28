@@ -37,7 +37,16 @@ impl StDisplay {
             event_pump,
         }
     }
+
+    pub fn move_mouse(&self, (x,y): (isize, isize)) {
+        self.sdl_ctx.mouse().warp_mouse_in_window(
+            self.canvas.window(),
+            (x * DISPLAY_SCALE as isize) as i32,
+            (y * DISPLAY_SCALE as isize) as i32,
+        );
+    }
 }
+
 
 pub fn notice_new_display(interp: &mut Interpreter) -> Option<()> {
     use super::bitblt::{FORM_BITS_IDX, FORM_HEIGHT_IDX, FORM_WIDTH_IDX};
@@ -170,7 +179,12 @@ fn key_to_st(key: sdl2::keyboard::Scancode) -> Option<char> {
         Scancode::RCtrl => Some(138 as char),
         Scancode::RShift => Some(137 as char),
         Scancode::RAlt => Some(27 as char),
-        _ => None,
+        Scancode::Apostrophe => Some('\''),
+        Scancode::Grave => Some('_'),
+        _ => {
+            println!("Unknown keycode {:?}", key);
+            None
+        },
     }
 }
 
@@ -239,6 +253,7 @@ const DISPLAY_SCALE: u32 = 2;
 
 fn render_display(interp: &mut Interpreter) -> Option<()> {
     use super::bitblt::{FORM_BITS_IDX, FORM_HEIGHT_IDX, FORM_WIDTH_IDX};
+    use std::cmp::{min, max};
 
 
     let display_form = interp.display.display;
@@ -294,27 +309,35 @@ fn render_display(interp: &mut Interpreter) -> Option<()> {
             .get_ptr(cursor_form, FORM_HEIGHT_IDX)
             .try_as_integer()?;
 
-        let mut raw_owned = cursor_raw.to_vec();
-        let image = sdl2::surface::Surface::from_data(
-            &mut raw_owned[..],
-            cursor_w as u32,
-            cursor_h as u32,
-            (cursor_w as u32 + 15) / 16 * 2,
-            PixelFormatEnum::Index1MSB,
-        )
-            .ok()?;
-        let tex = texc.create_texture_from_surface(image).ok()?;
-        let cursor_pos = interp.display.cursor_location.unwrap_or(interp.display.mouse_location);
-        let dest_rect = Rect::new(
-            cursor_pos.0 as i32 * DISPLAY_SCALE as i32,
-            cursor_pos.1 as i32 * DISPLAY_SCALE as i32,
-            cursor_w as u32 * DISPLAY_SCALE,
-            cursor_h as u32 * DISPLAY_SCALE,
-        );
-        canvas.set_blend_mode(BlendMode::Add);
-        canvas.set_draw_color(Color::RGB(0,128,255));
-        canvas.copy(&tex, None, dest_rect).ok()?;
-
+        let mut cursor_rgba = [0u8;512];
+        if cursor_w > 0 {
+            for y in 0..min(cursor_w as usize, 16) {
+                let row = (cursor_raw[y*2] as usize) << 8 | (cursor_raw[y*2+1] as usize);
+                let orow = &mut cursor_rgba[y*32..y*32+32];
+                for x in 0..16 {
+                    orow[x*2+1] = 0xF0;
+                    orow[x*2] = if row & (0x8000 >> x) != 0 { 0x08 } else { 0x00 }
+                }
+            }
+            let image = sdl2::surface::Surface::from_data(
+                &mut cursor_rgba[..],
+                16, 16,
+                32,
+                PixelFormatEnum::RGBA4444,
+            )
+                .ok()?;
+            let tex = texc.create_texture_from_surface(image).ok()?;
+            let cursor_pos = interp.display.cursor_location.unwrap_or(interp.display.mouse_location);
+            let dest_rect = Rect::new(
+                cursor_pos.0 as i32 * DISPLAY_SCALE as i32,
+                cursor_pos.1 as i32 * DISPLAY_SCALE as i32,
+                cursor_w as u32 * DISPLAY_SCALE,
+                cursor_h as u32 * DISPLAY_SCALE,
+            );
+            canvas.set_blend_mode(BlendMode::Blend);
+            canvas.set_draw_color(Color::RGB(0, 128, 255));
+            canvas.copy(&tex, None, dest_rect).ok()?;
+        }
     }
 
     canvas.present();

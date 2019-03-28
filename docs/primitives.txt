@@ -1,0 +1,8 @@
+128: FileDirectory class >> primitiveListFiles: aPath
+
+    Return a string containing a nul-separated list of filenames in aPath
+
+129: FileDirectory >> remove: aName
+
+    Remove aName from the directory
+

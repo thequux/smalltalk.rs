@@ -2380,8 +2380,8 @@ impl Interpreter {
 
     fn prim_cursor_loc_put(&mut self) -> Option<()> {
         let pt = self.stack_top();
-        let pt_x = self.get_integer(pt, CLASS_POINT_X)?;
-        let pt_y = self.get_integer(pt, CLASS_POINT_Y)?;
+        let pt_x = self.get_integer(pt, CLASS_POINT_X)? as isize;
+        let pt_y = self.get_integer(pt, CLASS_POINT_Y)? as isize;
         self.pop();
 
         {
@@ -2390,8 +2390,11 @@ impl Interpreter {
                 .cursor_location
                 .as_mut()
                 .unwrap_or(&mut self.display.mouse_location);
-            target.0 = pt_x as isize;
-            target.1 = pt_y as isize;
+            target.0 = pt_x;
+            target.1 = pt_y;
+        }
+        if self.display.cursor_location.is_none() {
+            self.display_impl.move_mouse((pt_x, pt_y))
         }
         Some(())
     }
