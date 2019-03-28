@@ -14,8 +14,8 @@ pub const SMALLINT_MIN: Word = -16384;
 pub const SMALLINT_MAX: Word = 16383;
 
 pub trait ImageFormat {
-    fn load<P: AsRef<Path>>(path: P) -> std::io::Result<ObjectMemory>;
-    fn save<P: AsRef<Path>>(path: P, memory: &ObjectMemory) -> std::io::Result<()>;
+    fn load<P: AsRef<Path>>(path: P) -> Result<ObjectMemory, failure::Error>;
+    fn save<P: AsRef<Path>>(path: P, memory: &ObjectMemory) -> Result<(), failure::Error>;
 }
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
@@ -48,7 +48,12 @@ impl Debug for OOP {
         if self.is_object() {
             write!(f, "@0x{:X}", self.as_oid())
         } else {
-            write!(f, "$0x{:X}", self.as_integer())
+            let ival = self.as_integer() as isize;
+            if ival >= 0 {
+                write!(f, "$0x{:X}", ival)
+            } else {
+                write!(f, "$-0x{:X}", -ival)
+            }
         }
     }
 }
@@ -264,6 +269,9 @@ impl ObjectMemory {
     }
 
     pub fn get_byte_length_of(&self, oid: OOP) -> usize {
+        if oid.is_integer() {
+            return 0
+        }
         self.get_obj(oid).content.len()
     }
 

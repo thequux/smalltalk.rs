@@ -21,7 +21,7 @@
 
 pub enum TextFormat {}
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
-use crate::objectmemory::{ImageFormat, ObjectMemory, ObjectLayout, OOP, CLASS_COMPILED_METHOD_PTR, Object, Word};
+use crate::objectmemory::{ImageFormat, ObjectMemory, ObjectLayout, OOP, CLASS_COMPILED_METHOD_PTR, Object, Word, UWord};
 use std::fs::File;
 use std::io::{self, prelude::*, SeekFrom, BufWriter, BufReader};
 use std::path::Path;
@@ -29,6 +29,7 @@ use std::fmt::{self, Display, Formatter, Arguments};
 use crate::interpreter::MethodHeader;
 use regex::Regex;
 use sdl2::filesystem::PrefPathError::InvalidApplicationName;
+use failure::{Error, Fail};
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
 enum InnerFormat {
@@ -73,24 +74,24 @@ fn obj_format(memory: &ObjectMemory, oop: OOP) -> InnerFormat {
 }
 
 fn parse_oop(text: &str) -> Option<OOP> {
-    if text[0] == '$' {
-        let num = if text[1..4] == "-0x" {
-            &text[4..]
-        } else if text[1..3] == "0x" {
-            &text[3..]
+    if text.as_bytes()[0] == b'$' {
+        let (num, neg) = if &text[1..4] == "-0x" {
+            (&text[4..], true)
+        } else if &text[1..3] == "0x" {
+            (&text[3..], false)
         } else {
             return None;
         };
 
-        let ival = isize::from_str_radix(num, 16)?;
+        let ival = isize::from_str_radix(num, 16).ok()? * if neg { -1 } else { 1 };
         let result = OOP::from(ival as Word);
         if result.as_integer() as isize != ival {
             return None;
         }
         return Some(result)
-    } else if text[0..3] == "@0x" {
-        let num = usize::from_str_radix(&text[3..])?;
-        let oop = OOP::pointer(num as uword);
+    } else if &text[0..3] == "@0x" {
+        let num = usize::from_str_radix(&text[3..], 16).ok()?;
+        let oop = OOP::pointer(num as UWord as usize);
         if oop.as_oid() != num {
             return None;
         }
@@ -100,47 +101,96 @@ fn parse_oop(text: &str) -> Option<OOP> {
 }
 
 impl ImageFormat for TextFormat {
-    fn load<P: AsRef<Path>>(path: P) -> io::Result<ObjectMemory> {
-        let header_re = Regex::new(r"!Object: (@0x[0-9a-fA-F]+) ofClass: (@0x[0-9a-fA-F]+) format: (#byte|#word|#ptr)!").unwrap();
+    fn load<P: AsRef<Path>>(path: P) -> Result<ObjectMemory, failure::Error> {
+        let header_re = Regex::new(r"!Object: (@0x[0-9a-fA-F]+) ofClass: (@0x[0-9a-fA-F]+) format: (#byte|#word|#ptr|#method)!").unwrap();
 
         let mut mem = ObjectMemory::new();
+        mem.pad_table(); // make sure all target objects exist
 
         let f = File::open(path)?;
         // We read line-by-line.
         let mut obj = None;
         let mut oop = OOP(0);
 
-        for line in BufReader::new(f).lines() {
+        'line: for (line_no, line) in BufReader::new(f).lines().enumerate() {
             let line = line?;
-            if let Some(header) = header_re.captures(&line) {
-                // save old object
-                if let Some(obj) = obj.take() {
-                    mem.objects[oop.as_oid()] = Some(obj);
-                }
+            (||{
+                if let Some(header) = header_re.captures(&line) {
+                    // save old object
+                    if let Some(obj) = obj.take() {
+                        mem.objects[oop.as_oid()] = Some(obj);
+                    }
 
-                let format = match header.get(3).unwrap().as_str() {
-                    "#byte" => InnerFormat::Byte,
-                    "#word" => InnerFormat::Word,
-                    "#ptr" => InnerFormat::Ptr,
-                    "#method" => InnerFormat::Method,
-                };
-                oop = parse_oop(header.get(1).unwrap().as_str()).unwrap();
-                let klass = parse_oop(header.get(2).unwrap().as_str()).unwrap();
-                obj = Some(Object{
-                    class: klass,
-                    layout: format.as_layout(),
-                    mark: false,
-                    content: vec![]
-                });
-            } else {
-                // either bytes or words, depending
-            }
+                    let format = match header.get(3).unwrap().as_str() {
+                        "#byte" => InnerFormat::Byte,
+                        "#word" => InnerFormat::Word,
+                        "#ptr" => InnerFormat::Ptr,
+                        "#method" => InnerFormat::Method,
+                        _ => panic!("Invalid object type"),
+                    };
+                    oop = parse_oop(header.get(1).unwrap().as_str()).ok_or_else(||failure::err_msg("Invalid OOP"))?;
+                    let klass = parse_oop(header.get(2).unwrap().as_str()).ok_or_else(||failure::err_msg("Invalid OOP"))?;
+                    obj = Some(Object{
+                        class: klass,
+                        layout: format.as_layout(),
+                        mark: false,
+                        content: vec![]
+                    });
+                } else {
+                    // either bytes or words, depending on the object format
+                    // we cheat. Because we know that words are big-endian and always presented
+                    // in their full glory, we can treat everything as bytes.
+                    // Oops are broken into big-endian form and then shoved in directly
+                    let mut line = line.as_str();
+                    loop {
+                        line = line.trim();
+                        let start = if let Some(c1) = line.chars().next() {
+                            c1
+                        } else {
+                            break
+                        };
+
+                        match start {
+                            '0'...'9'|'A'...'F'|'a'...'f' => {
+                                // hex line, either bytes or words. We could look it up but see above
+                                // re: cheating
+                                let (next_word, rest) = line.split_at(2);
+                                line = rest;
+                                let byte = u8::from_str_radix(next_word, 16)?;
+                                obj.as_mut().unwrap().content.push(byte);
+                            },
+                            '@' | '$' => {
+                                let (next_word, rest) = if let Some(n) = line.find(char::is_whitespace) {
+                                    (&line[0..n], &line[n..])
+                                } else {
+                                    (line, "")
+                                };
+                                line = rest;
+                                let oop = parse_oop(next_word).ok_or_else(||failure::err_msg("Invalid OOP"))?;
+                                obj.as_mut().ok_or_else(|| failure::err_msg("No active object"))?
+                                    .content.extend_from_slice(&oop.0.to_be_bytes()[..]);
+                            },
+                            _ => {
+                                panic!("Invalid char {:?} on line {}", start, line_no);
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            })().map_err(|err: failure::Error| {
+                println!("Error on line {}", line_no);
+                err.context(format!("on line {}", line_no))
+            })?;
         }
 
-        unimplemented!()
+        if let Some(obj) = obj.take() {
+            mem.objects[oop.as_oid()] = Some(obj);
+        }
+
+        Ok(mem)
     }
 
-    fn save<P: AsRef<Path>>(path: P, memory: &ObjectMemory) -> io::Result<()> {
+    fn save<P: AsRef<Path>>(path: P, memory: &ObjectMemory) -> Result<(), failure::Error> {
         let f = File::create(path)?;
         let mut w = BufWriter::new(f);
         for i in 0..memory.objects.len() {

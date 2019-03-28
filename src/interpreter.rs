@@ -8,7 +8,7 @@ use crate::interpreter::gc_support::HeldOops;
 use std::fs::File;
 use std::io::BufRead;
 use crate::utils::floor_divmod;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 mod bitblt;
 mod display;
@@ -2437,7 +2437,23 @@ impl Interpreter {
 
     fn prim_snapshot(&mut self) -> Option<()> {
         println!("Snapshot!");
-        Some(())
+        // save the active context
+        self.save_ctx();
+        let proc = self.active_process();
+        self.memory.put_ptr(proc, SUSPENDED_CONTEXT_INDEX, self.active_context);
+        self.gc();
+
+        use crate::objectmemory::{ImageFormat, text_format::TextFormat};
+        if let Err(err) = TextFormat::save("snapshot.dump", &self.memory) {
+            eprintln!("Encountered error {}", err);
+            None
+        } else {
+            self.memory.put_ptr(proc, SUSPENDED_CONTEXT_INDEX, NIL_PTR);
+            self.pop();
+            self.push(NIL_PTR);
+            Some(())
+            // unset suspended context
+        }
     }
 
     fn prim_time_words_into(&mut self) -> Option<()> {
@@ -2451,7 +2467,7 @@ impl Interpreter {
         for i in 0..4 {
             self.vm_atput(
                 result_array,
-                4 - i,
+                i+1,
                 OOP::try_from_integer(((st_time >> (8 * i)) & 0xFF) as Word)?,
             );
         }
@@ -2467,10 +2483,15 @@ impl Interpreter {
         for i in 0..4 {
             self.vm_atput(
                 result_array,
-                4 - i,
+                i+1,
                 OOP::try_from_integer(((unix_time >> (8 * i)) & 0xFF) as Word)?,
             );
         }
+        print!("Fetched time: ");
+        for i in 0..4 {
+            print!("{:02x}", self.memory.get_byte(result_array, i))
+        }
+        println!();
         self.pop();
         // TODO: return result array or self? Right now, returns self
         Some(())
@@ -2481,12 +2502,18 @@ impl Interpreter {
         let semaphore = self.stack_value(1);
 
         let mut when = 0;
-        println!("Scheduling timer...");
-        for i in 0..self.memory.get_byte_length_of(when_array) {
+        println!("Scheduling timer... at {}", self.obj_name(when_array));
+        let bytelen = self.memory.get_byte_length_of(when_array);
+        print!("Raw time: ");
+        for i in 0..bytelen {
             let byte = self.memory.get_byte(when_array, i) as u32;
+            print!("{:2x}", byte);
             when |= byte << (i * 8);
+//            when = (when << 8) | byte;
         }
-        println!("Scheduled timer for {}", when);
+        println!();
+        println!("Scheduled timer for {:8x}", when);
+        println!("Now is              {:8x}", self.time_millis());
         self.timer_when = when;
         self.timer_sem = Some(semaphore);
         self.popn(1);
@@ -2605,12 +2632,14 @@ impl Interpreter {
 // Regular processing...
 impl Interpreter {
     fn time_millis(&self) -> u32 {
+//        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u32
         self.startup_time.elapsed().as_millis() as u32
     }
+
     fn interruption_point(&mut self) {
         // Any queued semaphores?
         if self.timer_sem.is_some()
-            && u32::wrapping_sub(self.time_millis(), self.timer_when) < 0x7FFF_FFF
+            && u32::wrapping_sub(self.time_millis(), self.timer_when) < 0x7FFF_FFFF
         {
             println!("Timer semaphore triggered");
             let sem = self.timer_sem.take().unwrap();

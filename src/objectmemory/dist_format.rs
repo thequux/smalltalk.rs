@@ -39,7 +39,7 @@ impl ObjTblEntry {
 }
 
 impl super::ImageFormat for DistFormat {
-    fn load<P: AsRef<Path>>(path: P) -> io::Result<ObjectMemory> {
+    fn load<P: AsRef<Path>>(path: P) -> Result<ObjectMemory, failure::Error> {
         let mut f = File::open(path)?;
 
         let obj_space_len = f.read_u32::<BigEndian>()? as usize;
@@ -107,7 +107,7 @@ impl super::ImageFormat for DistFormat {
         Ok(memory)
     }
 
-    fn save<P: AsRef<Path>>(path: P, memory: &ObjectMemory) -> io::Result<()> {
+    fn save<P: AsRef<Path>>(path: P, memory: &ObjectMemory) -> Result<(), failure::Error> {
         unimplemented!()
     }
 }
